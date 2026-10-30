@@ -10,8 +10,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python -m unittest -v
+      - uses: actions/checkout@v4
+        with:
+          ref: 76c042621d034657f69ad41b41c1704520fd037b
+          path: previous
       - name: Restore the completed Windows build
-        uses: mtzguido/install-fstar@76c042621d034657f69ad41b41c1704520fd037b
+        uses: ./previous
         id: first
         env:
           MAKEFLAGS: --question
