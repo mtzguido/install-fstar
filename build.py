@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -194,6 +195,12 @@ fi'''
         if stage.exists():
             text = stage.read_text(encoding='utf-8').replace(
                 '--prefix=$(PREFIX)', '--prefix=$(call cygpath,$(PREFIX))')
+            # Git creates file symlinks for generated directories that do not
+            # exist at checkout. Repair their type after extraction, before
+            # each native Dune invocation sees the generated sources.
+            repair = ('"$${INSTALL_FSTAR_PYTHON}" "$${INSTALL_FSTAR_ACTION}/build.py" '
+                      'windows-links "$${INSTALL_FSTAR_SOURCE}"')
+            text = text.replace('$(DUNE) ', repair + ' && $(DUNE) ')
             stage.write_text(text, encoding='utf-8', newline='\n')
     script.write_text(contents, encoding='utf-8', newline='\n')
 
@@ -212,13 +219,34 @@ def windows_runtime(prefix):
             print(f'Bundled runtime library: {library}', flush=True)
 
 
+def windows_links(source):
+    """Retype Git file symlinks whose generated directory targets now exist."""
+    source = Path(source)
+    listing = run(['git', '-C', source, 'ls-files', '--stage', '-z'], os.environ, capture=True)
+    for entry in listing.split('\0'):
+        if not entry.startswith('120000 '):
+            continue
+        path = source / entry.split('\t', 1)[1]
+        if not path.is_symlink():
+            continue
+        attributes = getattr(path.lstat(), 'st_file_attributes', 0)
+        if attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
+            continue
+        target = os.readlink(path)
+        if (path.parent / target).is_dir():
+            path.unlink()
+            path.symlink_to(target, target_is_directory=True)
+            print(f'Repaired directory symlink: {path}', flush=True)
+
+
 def build(state):
     env = environment(state)
     source = Path(state['source_path'])
     if state['system'] in ('Darwin', 'Windows_NT'):
         prepare_packaging(source, state['system'])
     env.update(INSTALL_FSTAR_PYTHON=Path(sys.executable).as_posix(),
-               INSTALL_FSTAR_ACTION=ACTION.as_posix())
+               INSTALL_FSTAR_ACTION=ACTION.as_posix(),
+               INSTALL_FSTAR_SOURCE=source.as_posix())
     if not state.get('source_url'):
         run(['git', '-C', source, 'submodule', 'update', '--init', '--recursive', '--depth=1'], env)
     script, output = str(ACTION / 'build.sh'), state['archive']
@@ -234,6 +262,7 @@ def build(state):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 3 or sys.argv[1] != 'windows-runtime':
-        raise SystemExit('Usage: build.py windows-runtime PREFIX')
-    windows_runtime(sys.argv[2])
+    commands = {'windows-runtime': windows_runtime, 'windows-links': windows_links}
+    if len(sys.argv) != 3 or sys.argv[1] not in commands:
+        raise SystemExit('Usage: build.py {windows-runtime|windows-links} PATH')
+    commands[sys.argv[1]](sys.argv[2])

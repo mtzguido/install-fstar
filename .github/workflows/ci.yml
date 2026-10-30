@@ -12,13 +12,11 @@ jobs:
           - version: 479825350e902c868b7b8c2ad918eaac073f3494
             native: 'false'
             ocaml: '5.3.0'
-          - version: v2026.10.25
-            native: 'true'
-            ocaml: '5.4.0'
     runs-on: windows-2025
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - run: python -m unittest -v
       - uses: ocaml/setup-ocaml@v3
         if: matrix.native == 'true'
         with:

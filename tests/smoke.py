@@ -12,13 +12,19 @@ env = os.environ.copy()
 exe = os.environ['FSTAR_EXE']
 
 
-def run(args):
+def run(args, reject=False):
     print('+', ' '.join(args), flush=True)
-    result = subprocess.run(args, cwd=work, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    # Expected proof failures should not emit GitHub error annotations.
+    command_env = dict(env, GITHUB_ACTIONS='') if reject else env
+    result = subprocess.run(args, cwd=work, env=command_env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     print(result.stdout, end='', flush=True)
     with (work / 'commands.log').open('a', encoding='utf-8') as log:
         log.write(' '.join(args) + '\n' + result.stdout)
-    result.check_returncode()
+    if reject:
+        assert result.returncode != 0, 'F* accepted an invalid proof'
+        assert 'could not prove' in result.stdout.lower(), result.stdout
+    else:
+        result.check_returncode()
     return result.stdout
 
 
@@ -28,6 +34,8 @@ assert os.environ['EXPECTED_METHOD'] == os.environ['ACTUAL_METHOD']
 assert Path(exe).is_file()
 work.joinpath('Example.fst').write_text('module Example\nlet _ = assert (forall (x:int). x + 1 > x)\n', encoding='utf-8')
 run([exe, str(work / 'Example.fst')])
+work.joinpath('Invalid.fst').write_text('module Invalid\nlet _ = assert (forall (x:int). x + 1 = x)\n', encoding='utf-8')
+run([exe, str(work / 'Invalid.fst')], reject=True)
 if os.environ.get('LEGACY') != 'true':
     work.joinpath('PulseExample.fst').write_text('module PulseExample\n#lang-pulse\nopen Pulse\nfn test (x:int) returns int { (x+1); }\n', encoding='utf-8')
     run([exe, str(work / 'PulseExample.fst')])
