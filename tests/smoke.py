@@ -26,7 +26,7 @@ version = run([exe, '--version'])
 assert f"commit={os.environ['EXPECTED_COMMIT']}" in version.splitlines()
 assert os.environ['EXPECTED_METHOD'] == os.environ['ACTUAL_METHOD']
 assert Path(exe).is_file()
-work.joinpath('Example.fst').write_text('module Example\nlet _ = assert (forall x. 1 + x*x > 0)\n', encoding='utf-8')
+work.joinpath('Example.fst').write_text('module Example\nlet _ = assert (forall (x:int). x + 1 > x)\n', encoding='utf-8')
 run([exe, str(work / 'Example.fst')])
 if os.environ.get('LEGACY') != 'true':
     work.joinpath('PulseExample.fst').write_text('module PulseExample\n#lang-pulse\nopen Pulse\nfn test (x:int) returns int { (x+1); }\n', encoding='utf-8')
