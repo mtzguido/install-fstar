@@ -106,8 +106,13 @@ class FingerprintTests(unittest.TestCase):
                  'opamswitch': 'build', 'ocaml': '5.4.0', 'work': str(self.root), 'source_path': str(self.root)}
         with patch.object(build, 'run', return_value='5.4.0') as run:
             build.dependencies(state)
+        self.assertEqual(run.call_args_list[0].args[0], ['opam', 'update'])
+        self.assertEqual(run.call_args_list[1].args[0], ['opam', 'install', '--deps-only', './fstar.opam'])
+        self.assertEqual(len(run.call_args_list), 3)
+        with patch.object(build, 'run', return_value='5.4.0') as run:
+            build.dependencies({**state, 'native': True})
         self.assertEqual(run.call_args_list[0].args[0], ['opam', 'install', '--deps-only', './fstar.opam'])
-        self.assertEqual(len(run.call_args_list), 2)
+        self.assertEqual(len(run.call_args_list), 2)  # Caller owns its repositories too.
         with patch.object(build, 'run', return_value='5.3.0'):
             with self.assertRaisesRegex(ValueError, 'changed the compiler'):
                 build.dependencies(state)

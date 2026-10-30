@@ -143,6 +143,10 @@ def dependencies(state):
             initial.pop('OPAMSWITCH', None)
             run(args, initial, cwd=work)
             run(['opam', 'switch', 'create', 'build', 'ocaml-base-compiler.' + state['ocaml']], initial, cwd=work)
+        else:
+            # A newer F* manifest may require packages published since this
+            # root was cached. Refresh metadata without upgrading the switch.
+            run(['opam', 'update'], env, cwd=work)
         env = environment(state)  # opam init may have installed Cygwin.
     run(['opam', 'install', '--deps-only', './fstar.opam'], env, cwd=state['source_path'])
     actual = run(['opam', 'exec', '--', 'ocamlc', '-version'], env, capture=True)
