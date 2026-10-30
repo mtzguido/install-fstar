@@ -161,6 +161,9 @@ Source builds use `ADMIT=1`, matching F*'s own package builds. They compile the
 selected compiler and libraries without rerunning all F* verification proofs.
 For portable source archives that omit it during installation, the action also
 installs the included `fstarc.cui` interface required by Custard plugins.
+On macOS, packaging preserves the symbols needed to load native plugins.
+On Windows, it converts bootstrap/install paths for native tools and bundles
+the compiler's actual non-system runtime DLLs.
 
 ## Tests
 
@@ -169,7 +172,8 @@ and weekly to catch runner/toolchain changes. It covers:
 
 - Unit tests on Linux, macOS, Windows, and multiple Python versions.
 - Release and nightly binaries on Linux x86-64/ARM64, Intel/Apple Silicon macOS,
-  and Windows 2022/2025, with solver-backed F* and Pulse proofs.
+  and Windows 2022/2025, with solver-backed F* and Pulse proofs and rejection of
+  invalid proofs.
 - Commit builds and native release/nightly builds on all five OS/architecture
   combinations, with plugin compilation and loading in the caller's OPAM switch.
 - Legacy F*1 and an older OCaml compiler, native/private cache reuse, cache bypass,

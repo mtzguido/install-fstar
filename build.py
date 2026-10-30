@@ -3,12 +3,14 @@
 import os
 import json
 from pathlib import Path
+import re
 import shutil
+import stat
 import subprocess
 import sys
 
 from install import ACTION, append, file_hash, identity, package_cache, unpack
-from fingerprint import system_abi
+from fingerprint import linked_libraries, system_abi
 
 
 # Bump when changing the private switch layout or compiler provisioning. F*
@@ -166,10 +168,93 @@ def fingerprint(state):
     package_cache(state, state.get('environment'))
 
 
+def prepare_packaging(source, system):
+    """Apply packaging/path compatibility fixes without changing F* sources."""
+    source = Path(source)
+    script = source / '.scripts/bin-install.sh'
+    contents = script.read_text(encoding='utf-8')
+    if system == 'Darwin':
+        # Plain Darwin strip removes symbols required by native Dynlink.
+        contents = re.sub(r'^STRIP=strip$', 'STRIP="strip -S"', contents, flags=re.MULTILINE)
+    elif system == 'Windows_NT':
+        # The upstream script assumes a dynamically linked GMP DLL. Instead,
+        # bundle the DLLs this compiler actually uses (GMP can be static).
+        replacement = '''if windows; then
+    "$INSTALL_FSTAR_PYTHON" "$INSTALL_FSTAR_ACTION/build.py" windows-runtime "$(cygpath -m "$PREFIX")"
+fi'''
+        contents = re.sub(r'^if windows; then\n.*?^fi', lambda _: replacement,
+                          contents, count=1, flags=re.MULTILINE | re.DOTALL)
+        makefile = source / 'Makefile'
+        text = makefile.read_text(encoding='utf-8')
+        # Native Windows F* cannot interpret Cygwin's /cygdrive paths in its
+        # FSTAR_LIB environment variable. Other path inputs use mk/common.mk.
+        for old in ('FSTAR_LIB=$(abspath ulib)', 'FSTAR_LIB=$(CURDIR)/ulib'):
+            text = text.replace(old, 'FSTAR_LIB=$(call cygpath,ulib)')
+        makefile.write_text(text, encoding='utf-8', newline='\n')
+        stage = source / 'mk/stage.mk'
+        if stage.exists():
+            text = stage.read_text(encoding='utf-8').replace(
+                '--prefix=$(PREFIX)', '--prefix=$(call cygpath,$(PREFIX))')
+            # Git creates file symlinks for generated directories that do not
+            # exist at checkout. Repair their type after extraction, before
+            # each native Dune invocation sees the generated sources.
+            repair = ('"$${INSTALL_FSTAR_PYTHON}" "$${INSTALL_FSTAR_ACTION}/build.py" '
+                      'windows-dune "$${INSTALL_FSTAR_SOURCE}"')
+            # Keep repair and Dune under the existing lock: parallel targets
+            # must not unlink/recreate the same directory symlink concurrently.
+            text = text.replace('DUNE=flock $(LOCKFILE) dune', 'DUNE=flock $(LOCKFILE) ' + repair)
+            text = text.replace('DUNE=dune', 'DUNE=' + repair)
+            stage.write_text(text, encoding='utf-8', newline='\n')
+    script.write_text(contents, encoding='utf-8', newline='\n')
+
+
+def windows_runtime(prefix):
+    """Bundle actual non-system DLL dependencies, using the active OPAM PATH."""
+    destination = Path(prefix) / 'bin'
+    system = Path(os.environ['SystemRoot']).resolve()
+    for library in linked_libraries(destination / 'fstar.exe', 'Windows_NT'):
+        library = library.resolve()
+        if library.suffix.lower() != '.dll' or library.is_relative_to(system):
+            continue
+        target = destination / library.name
+        if library != target.resolve():
+            shutil.copy2(library, target)
+            print(f'Bundled runtime library: {library}', flush=True)
+
+
+def windows_links(source):
+    """Retype Git file symlinks whose generated directory targets now exist."""
+    source = Path(source)
+    listing = run(['git', '-C', source, 'ls-files', '--stage', '-z'], os.environ, capture=True)
+    for entry in listing.split('\0'):
+        if not entry.startswith('120000 '):
+            continue
+        path = source / entry.split('\t', 1)[1]
+        if not path.is_symlink():
+            continue
+        attributes = getattr(path.lstat(), 'st_file_attributes', 0)
+        if attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
+            continue
+        target = os.readlink(path)
+        if (path.parent / target).is_dir():
+            path.unlink()
+            path.symlink_to(target, target_is_directory=True)
+            print(f'Repaired directory symlink: {path}', flush=True)
+
+
 def build(state):
     env = environment(state)
     source = Path(state['source_path'])
+    if state['system'] in ('Darwin', 'Windows_NT'):
+        prepare_packaging(source, state['system'])
+    env.update(INSTALL_FSTAR_PYTHON=Path(sys.executable).as_posix(),
+               INSTALL_FSTAR_ACTION=ACTION.as_posix(),
+               INSTALL_FSTAR_SOURCE=source.as_posix())
     if not state.get('source_url'):
+        # Packaging compatibility edits leave the compiler sources intact but
+        # make git describe append -dirty. Record the verified checkout SHA;
+        # the cache identity separately includes all installer recipe edits.
+        env['FSTAR_COMMIT'] = state['commit']
         run(['git', '-C', source, 'submodule', 'update', '--init', '--recursive', '--depth=1'], env)
     script, output = str(ACTION / 'build.sh'), state['archive']
     bash = shutil.which('bash', path=env['PATH'])
@@ -181,3 +266,13 @@ def build(state):
     if not bash:
         raise ValueError('Building F* requires Bash')
     run([bash, script, source, output, str(os.cpu_count() or 2)], env)
+
+
+if __name__ == '__main__':
+    if len(sys.argv) >= 3 and sys.argv[1] == 'windows-dune':
+        windows_links(sys.argv[2])
+        run(['dune', *sys.argv[3:]], os.environ)
+    elif len(sys.argv) == 3 and sys.argv[1] == 'windows-runtime':
+        windows_runtime(sys.argv[2])
+    else:
+        raise SystemExit('Usage: build.py windows-runtime PREFIX | windows-dune SOURCE [DUNE_ARGS...]')
