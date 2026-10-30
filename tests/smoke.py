@@ -37,7 +37,9 @@ if os.environ.get('NATIVE') == 'true':
     prefix = subprocess.check_output(['opam', 'var', 'prefix'], text=True).strip()
     assert prefix == Path(os.environ['RUNNER_TEMP'], 'caller-prefix').read_text().strip()
     assert f"compiler=OCaml {os.environ['EXPECTED_OCAML']}" in version.splitlines()
-    work.joinpath('Plugin.fst').write_text('module Plugin\n[@@plugin] let identity (x: int) : int = x\n', encoding='utf-8')
+    for suffix in ('cmxs', 'cmi', 'cmx', 'o', 'ml', 'fst.checked'):
+        work.joinpath('Plugin.' + suffix).unlink(missing_ok=True)
+    work.joinpath('Plugin.fst').write_text('module Plugin\n[@@plugin] irreducible let identity (x: int) : int = x\n', encoding='utf-8')
     work.joinpath('UsePlugin.fst').write_text('module UsePlugin\nlet _ = assert_norm (Plugin.identity 42 = 42)\n', encoding='utf-8')
     for args in (['Plugin.fst', '--cache_checked_modules'], ['Plugin.fst', '--codegen', 'Plugin'],
                  ['UsePlugin.fst', '--load', 'Plugin']):

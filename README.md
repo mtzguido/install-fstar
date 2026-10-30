@@ -158,6 +158,8 @@ Concurrent misses may build independently; a prerequisite job can warm caches.
 
 Source builds use `ADMIT=1`, matching F*'s own package builds. They compile the
 selected compiler and libraries without rerunning all F* verification proofs.
+For portable source archives that omit it during installation, the action also
+installs the included `fstarc.cui` interface required by Custard plugins.
 
 ## Tests
 
