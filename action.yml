@@ -1,0 +1,108 @@
+name: Install F*
+description: Install an F* release, nightly, or source revision with its bundled Z3 solvers
+
+inputs:
+  version:
+    description: Exact release tag, commit, branch, or nightly date (YYYY-MM-DD)
+    required: true
+  native:
+    description: Rebuild in the caller's active OPAM switch, including releases and nightlies; bypass the package cache
+    default: 'false'
+  cache:
+    description: Restore and save the finished package in the GitHub Actions cache
+    default: 'true'
+  ocaml-version:
+    description: OCaml compiler for source builds when native is false (native uses the active switch)
+    default: '5.3.0'
+  token:
+    description: GitHub token for reading public release and commit metadata
+    default: ${{ github.token }}
+
+outputs:
+  version:
+    description: Selected release/nightly tag, or resolved source commit
+    value: ${{ steps.resolve.outputs.version }}
+  commit:
+    description: Full F* commit SHA, also checked against the installed compiler
+    value: ${{ steps.resolve.outputs.commit }}
+  path:
+    description: Installation directory
+    value: ${{ steps.install.outputs.path }}
+  fstar-exe:
+    description: Absolute path to fstar.exe
+    value: ${{ steps.install.outputs.fstar-exe }}
+  cache-hit:
+    description: Whether the exact finished package was restored from the cache
+    value: ${{ steps.cache.outputs.cache-hit == 'true' }}
+
+  method:
+    description: Installation method (binary or source)
+    value: ${{ steps.resolve.outputs.method }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve F* version
+      id: resolve
+      shell: python
+      env:
+        INSTALL_FSTAR_VERSION: ${{ inputs.version }}
+        INSTALL_FSTAR_OCAML: ${{ inputs.ocaml-version }}
+        INSTALL_FSTAR_CACHE: ${{ inputs.cache }}
+        INSTALL_FSTAR_NATIVE: ${{ inputs.native }}
+        INSTALL_FSTAR_TOKEN: ${{ inputs.token }}
+      run: |
+        import os, runpy, sys
+        sys.path.insert(0, os.environ['GITHUB_ACTION_PATH'])
+        sys.argv = ['install.py', 'resolve']
+        runpy.run_path(os.path.join(os.environ['GITHUB_ACTION_PATH'], 'install.py'), run_name='__main__')
+
+    - name: Restore F* package
+      id: cache
+      if: steps.resolve.outputs.cache == 'true'
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ steps.resolve.outputs.archive }}
+        key: ${{ steps.resolve.outputs.cache-key }}
+
+    - name: Download F* package
+      if: steps.cache.outputs.cache-hit != 'true' && steps.resolve.outputs.source == 'false'
+      shell: python
+      env:
+        INSTALL_FSTAR_STATE: ${{ steps.resolve.outputs.state }}
+      run: |
+        import os, runpy, sys
+        sys.path.insert(0, os.environ['GITHUB_ACTION_PATH'])
+        sys.argv = ['install.py', 'download']
+        runpy.run_path(os.path.join(os.environ['GITHUB_ACTION_PATH'], 'install.py'), run_name='__main__')
+
+    - name: Build F* package
+      if: steps.cache.outputs.cache-hit != 'true' && steps.resolve.outputs.source == 'true'
+      shell: python
+      env:
+        INSTALL_FSTAR_STATE: ${{ steps.resolve.outputs.state }}
+      run: |
+        import os, runpy, sys
+        sys.path.insert(0, os.environ['GITHUB_ACTION_PATH'])
+        sys.argv = ['install.py', 'build']
+        runpy.run_path(os.path.join(os.environ['GITHUB_ACTION_PATH'], 'install.py'), run_name='__main__')
+
+    - name: Install and check F*
+      id: install
+      shell: python
+      env:
+        INSTALL_FSTAR_STATE: ${{ steps.resolve.outputs.state }}
+      run: |
+        import os, runpy, sys
+        sys.path.insert(0, os.environ['GITHUB_ACTION_PATH'])
+        sys.argv = ['install.py', 'install']
+        runpy.run_path(os.path.join(os.environ['GITHUB_ACTION_PATH'], 'install.py'), run_name='__main__')
+
+    # Save immediately, so subsequent jobs can reuse the package even if a
+    # consumer's later build fails. Never save a package that failed validation.
+    - name: Cache F* package
+      if: steps.resolve.outputs.cache == 'true' && steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ steps.resolve.outputs.archive }}
+        key: ${{ steps.resolve.outputs.cache-key }}
