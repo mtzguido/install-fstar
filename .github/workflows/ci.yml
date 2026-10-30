@@ -135,6 +135,9 @@ jobs:
         with:
           ocaml-compiler: ${{ matrix.ocaml }}
           opam-pin: false
+      - name: Install dependency artifact fixture
+        if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'
+        run: python tests/rebuild_dependency.py 42
       - name: Record caller environment
         shell: python
         run: |
@@ -202,19 +205,9 @@ jobs:
         run: |
           import runpy
           runpy.run_path('tests/smoke.py')
-      - name: Compile an additional dependency without changing package versions
+      - name: Rebuild dependency artifacts without changing package versions
         if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'
-        shell: python
-        run: |
-          import pathlib, subprocess
-          prefix = pathlib.Path(subprocess.check_output(['opam', 'var', 'prefix'], text=True).strip())
-          probe = prefix / 'lib/install_fstar_cache_probe'
-          probe.mkdir(exist_ok=True)
-          (probe / 'META').write_text('version = "1.0"\n')
-          (probe / 'probe.ml').write_text('let answer = 42\n')
-          (probe / 'stub.c').write_text('int probe(void) { return 42; }\n')
-          for source in ('probe.ml', 'stub.c'):
-              subprocess.run(['opam', 'exec', '--', 'ocamlopt', '-c', source], cwd=probe, check=True)
+        run: python tests/rebuild_dependency.py 43
       - uses: ./
         id: changed
         if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'

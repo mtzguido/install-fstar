@@ -1,4 +1,3 @@
-import json
 import os
 from pathlib import Path
 import tempfile
@@ -120,6 +119,17 @@ class FingerprintTests(unittest.TestCase):
         self.assertEqual(env['OCAMLPATH'], '/caller/lib')
         self.assertEqual(env['CFLAGS'], '-O3')
         self.assertEqual(env['OPAMSWITCH'], '/caller/project')
+
+    def test_bootstrapped_tool_is_found_in_child_environment_path(self):
+        directory = self.root / 'tools'
+        directory.mkdir()
+        executable = directory / ('fstar-fixture.cmd' if os.name == 'nt' else 'fstar-fixture')
+        executable.write_text('@echo off\necho bootstrapped\n' if os.name == 'nt'
+                              else '#!/bin/sh\necho bootstrapped\n')
+        executable.chmod(0o755)
+        env = os.environ.copy()
+        build.prepend(env, directory)
+        self.assertEqual(build.run(['fstar-fixture'], env, capture=True), 'bootstrapped')
 
 
 if __name__ == '__main__':

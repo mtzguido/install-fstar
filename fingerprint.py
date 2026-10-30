@@ -4,7 +4,6 @@ Run inside `opam exec` after dependency reconciliation. Timestamps, inode number
 OPAM logs and build directories deliberately do not contribute to the identity.
 """
 
-import hashlib
 import json
 import os
 from pathlib import Path

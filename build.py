@@ -13,6 +13,10 @@ from fingerprint import system_abi
 
 def run(args, env, cwd=None, capture=False):
     args = [str(a) for a in args]
+    # CreateProcess on Windows does not use env['PATH'] to find the program.
+    # Resolve explicitly so newly bootstrapped OPAM/Cygwin tools are visible.
+    args[0] = shutil.which(args[0], path=env['PATH']) or args[0]
+    print('+', ' '.join(args), flush=True)
     if capture:
         return subprocess.check_output(args, env=env, cwd=cwd, text=True).strip()
     subprocess.run(args, env=env, cwd=cwd, check=True)
@@ -91,6 +95,7 @@ def prepare(state):
         run(['git', 'init', '-q', source], env)
         if state['system'] == 'Windows_NT':
             run(['git', '-C', source, 'config', 'core.symlinks', 'true'], env)
+            run(['git', '-C', source, 'config', 'core.autocrlf', 'false'], env)
         run(['git', '-C', source, 'remote', 'add', 'origin',
              f"https://github.com/{state['repository']}.git"], env)
         run(['git', '-C', source, 'fetch', '--depth=1', 'origin', state['commit']], env)
@@ -104,7 +109,7 @@ def prepare(state):
         base = identity([system_abi(), state['ocaml'], run(['opam', '--version'], env, capture=True), recipe()])
         prefix = f'install-fstar-opam-v2-{base}-'
         key = prefix + file_hash(source / 'fstar.opam')
-        root = Path(os.environ['RUNNER_TEMP']) / 'install-fstar-dependencies' / base / 'opam'
+        root = Path(os.environ['RUNNER_TEMP']) / 'ifstar-deps' / base[:16] / 'opam'
         # The path must be stable: compiler configurations contain absolute
         # prefixes. Never reuse an unrelated or partially prepared local switch.
         if root.exists():
