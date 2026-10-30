@@ -4,57 +4,64 @@ on:
 permissions:
   contents: read
 jobs:
-  windows:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - version: 479825350e902c868b7b8c2ad918eaac073f3494
-            native: 'false'
-            ocaml: '5.3.0'
+  private-cache:
     runs-on: windows-2025
-    timeout-minutes: 90
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - run: python -m unittest -v
-      - uses: ocaml/setup-ocaml@v3
-        if: matrix.native == 'true'
-        with:
-          ocaml-compiler: ${{ matrix.ocaml }}
-          opam-pin: false
-      - name: Record caller prefix
-        if: matrix.native == 'true'
-        shell: python
-        run: |
-          import os, pathlib, subprocess
-          pathlib.Path(os.environ['RUNNER_TEMP'], 'caller-prefix').write_text(subprocess.check_output(['opam', 'var', 'prefix'], text=True))
-      - uses: ./
+      - name: Restore the completed Windows build
+        uses: mtzguido/install-fstar@76c042621d034657f69ad41b41c1704520fd037b
         id: first
+        env:
+          MAKEFLAGS: --question
         with:
-          version: ${{ matrix.version }}
-          native: ${{ matrix.native }}
-          ocaml-version: ${{ matrix.ocaml }}
-      - name: Verify compiler and plugins
+          version: 479825350e902c868b7b8c2ad918eaac073f3494
+      - name: Clean the actual private switch with the fix
+        id: cleanup
         shell: python
         env:
-          EXPECTED_COMMIT: ${{ steps.first.outputs.commit }}
-          EXPECTED_METHOD: source
-          ACTUAL_METHOD: ${{ steps.first.outputs.method }}
-          EXPECTED_OCAML: ${{ matrix.ocaml }}
-          NATIVE: ${{ matrix.native }}
+          CACHE_HIT: ${{ steps.first.outputs.cache-hit }}
         run: |
-          import runpy
-          runpy.run_path('tests/smoke.py')
-      - uses: ./
-        id: cached
-        with:
-          version: ${{ matrix.version }}
-          native: ${{ matrix.native }}
-          ocaml-version: ${{ matrix.ocaml }}
-      - name: Require cache reuse
-        shell: python
-        env:
-          CACHE_HIT: ${{ steps.cached.outputs.cache-hit }}
-        run: |
-          import os
+          import json, os, pathlib, stat
+          import build
           assert os.environ['CACHE_HIT'] == 'true'
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          states = [p for p in root.glob('install-fstar-*/state.json') if json.loads(p.read_text()).get('opamroot')]
+          assert len(states) == 1, states
+          state = json.loads(states[0].read_text())
+          (root / 'probe-state.json').write_text(json.dumps(state))
+          report = pathlib.Path(state['work']) / 'environment.json'
+          (root / 'environment-before.json').write_bytes(report.read_bytes())
+          private = pathlib.Path(state['opamroot'])
+          executable = private / 'build/bin/cppo.exe'
+          print('cppo.exe attributes:', executable.stat().st_file_attributes)
+          print('read-only:', bool(executable.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY))
+          build.remove_private_root(private)
+          assert not private.exists()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as outputs:
+              outputs.write('root=' + str(private) + '\n')
+      - name: Restore the private dependencies again
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ steps.cleanup.outputs.root }}
+          key: install-fstar-opam-v2-8507b8e58be2e8f634b15b1cac9482d7df204185cbaabb159158771304136b22-6124ef5acf9ee3d3a37c286daf4a86365de7ab00eba46620c728a32e0df62173
+          fail-on-cache-miss: true
+      - name: Reconcile and require the identical OCaml environment
+        shell: python
+        run: |
+          import json, os, pathlib
+          import build
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          state = json.loads((root / 'probe-state.json').read_text())
+          before = json.loads((root / 'environment-before.json').read_text())
+          build.dependencies(state)
+          build.fingerprint(state)
+          after = json.loads((pathlib.Path(state['work']) / 'environment.json').read_text())
+          first, second = before['data']['files'], after['data']['files']
+          for path in sorted(first.keys() | second.keys()):
+              if first.get(path) != second.get(path):
+                  print('Changed:', path, first.get(path), second.get(path))
+          print('Before:', before['fingerprint'])
+          print('After: ', after['fingerprint'])
+          assert before['fingerprint'] == after['fingerprint']

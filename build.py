@@ -22,6 +22,18 @@ def dependency_cache_base(state, opam_version):
     return identity([DEPENDENCY_CACHE_SCHEMA, system_abi(), state['ocaml'], opam_version])
 
 
+def remove_private_root(root):
+    def retry_writable(function, path, error):
+        if os.name != 'nt' or not isinstance(error[1], PermissionError):
+            raise error[1]
+        # OPAM installs read-only executables. Windows requires clearing that
+        # attribute before deleting our private switch for a cache restore.
+        os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+        function(path)
+
+    shutil.rmtree(root, onerror=retry_writable)
+
+
 def run(args, env, cwd=None, capture=False):
     args = [str(a) for a in args]
     # CreateProcess on Windows does not use env['PATH'] to find the program.
@@ -124,7 +136,7 @@ def prepare(state):
         # The path must be stable: compiler configurations contain absolute
         # prefixes. Never reuse an unrelated or partially prepared local switch.
         if root.exists():
-            shutil.rmtree(root)
+            remove_private_root(root)
         state.update(opamroot=root.as_posix(), opamswitch='build')
         append('GITHUB_OUTPUT', [f'dependencies-path={root}', f'dependencies-key={key}',
                                  f'dependencies-prefix={prefix}'])
@@ -193,8 +205,10 @@ fi'''
         for old in ('FSTAR_LIB=$(abspath ulib)', 'FSTAR_LIB=$(CURDIR)/ulib'):
             text = text.replace(old, 'FSTAR_LIB=$(call cygpath,ulib)')
         makefile.write_text(text, encoding='utf-8', newline='\n')
-        stage = source / 'mk/stage.mk'
-        if stage.exists():
+        # Stages 1/2 share mk/stage.mk; stage 3 has an independent copy.
+        for stage in (source / 'mk/stage.mk', source / 'stage3/Makefile'):
+            if not stage.exists():
+                continue
             text = stage.read_text(encoding='utf-8').replace(
                 '--prefix=$(PREFIX)', '--prefix=$(call cygpath,$(PREFIX))')
             # Git creates file symlinks for generated directories that do not
@@ -245,20 +259,34 @@ def windows_links(source):
     """Retype Git file symlinks whose generated directory targets now exist."""
     source = Path(source)
     listing = run(['git', '-C', source, 'ls-files', '--stage', '-z'], os.environ, capture=True)
-    for entry in listing.split('\0'):
-        if not entry.startswith('120000 '):
-            continue
-        path = source / entry.split('\t', 1)[1]
-        if not path.is_symlink():
-            continue
-        attributes = getattr(path.lstat(), 'st_file_attributes', 0)
-        if attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
-            continue
-        target = os.readlink(path)
-        if (path.parent / target).is_dir():
-            path.unlink()
-            path.symlink_to(target, target_is_directory=True)
-            print(f'Repaired directory symlink: {path}', flush=True)
+    pending = [source / entry.split('\t', 1)[1] for entry in listing.split('\0')
+               if entry.startswith('120000 ')]
+    while pending:
+        remaining = []
+        for path in pending:
+            if not path.is_symlink():
+                continue
+            attributes = getattr(path.lstat(), 'st_file_attributes', 0)
+            if attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
+                continue
+            target = os.readlink(path)
+            try:
+                directory = (path.parent / target).is_dir()
+            except PermissionError:
+                # Older Python raises when the target is another file symlink
+                # to a directory. Retry after repairing that target's type.
+                remaining.append(path)
+                continue
+            if directory:
+                path.unlink()
+                path.symlink_to(target, target_is_directory=True)
+                print(f'Repaired directory symlink: {path}', flush=True)
+            else:
+                remaining.append(path)
+        # A link may target another link repaired later in the first pass.
+        if len(remaining) == len(pending):
+            break
+        pending = remaining
 
 
 def build(state):

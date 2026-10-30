@@ -30,6 +30,8 @@ $STRIP "$strip_prefix"/bin/*
         (self.root / 'Makefile').write_text('FSTAR_LIB=$(abspath ulib)\nFSTAR_LIB=$(CURDIR)/ulib\n')
         (self.root / 'mk').mkdir()
         (self.root / 'mk/stage.mk').write_text('DUNE=flock $(LOCKFILE) dune\ncd dune && $(DUNE) install --prefix=$(PREFIX)\n')
+        (self.root / 'stage3').mkdir()
+        (self.root / 'stage3/Makefile').write_text((self.root / 'mk/stage.mk').read_text())
         (self.root / 'pulse/mk').mkdir(parents=True)
         (self.root / 'pulse/mk/common.mk').write_text('$(eval override $(strip $1):=$(abspath $(value $(strip $1))))\n')
         (self.root / 'pulse/mk/boot.mk').write_text('FSTAR_LIBDIR ?= $(shell $(FSTAR_EXE) --locate_lib)\n')
@@ -53,6 +55,8 @@ $STRIP "$strip_prefix"/bin/*
                       (self.root / 'mk/stage.mk').read_text())
         self.assertIn('windows-dune "$${INSTALL_FSTAR_SOURCE}"',
                       (self.root / 'mk/stage.mk').read_text())
+        self.assertEqual((self.root / 'mk/stage.mk').read_text(),
+                         (self.root / 'stage3/Makefile').read_text())
         self.assertIn('$(call maybe_cygwin_path,$(abspath $(value $(strip $1))))',
                       (self.root / 'pulse/mk/common.mk').read_text())
         self.assertIn('FSTAR_ROOT := $(call maybe_cygwin_path,$(FSTAR_ROOT))',
@@ -63,14 +67,18 @@ $STRIP "$strip_prefix"/bin/*
     def test_windows_link_target_becomes_directory_after_extraction(self):
         link = self.root / 'fstarc.ml'
         link.symlink_to('generated', target_is_directory=False)
+        outer = self.root / 'outer.ml'
+        outer.symlink_to('fstarc.ml', target_is_directory=False)
         generated = self.root / 'generated'
         generated.mkdir()
         (generated / 'Example.ml').write_text('let value = 42\n')
-        listing = '120000 ' + 'a' * 40 + ' 0\tfstarc.ml\0'
+        listing = ''.join('120000 ' + 'a' * 40 + ' 0\t' + name + '\0'
+                          for name in ('outer.ml', 'fstarc.ml'))
         with patch.object(build, 'run', return_value=listing):
             build.windows_links(self.root)
         self.assertTrue(link.is_dir())
         self.assertEqual((link / 'Example.ml').read_text(), 'let value = 42\n')
+        self.assertEqual((outer / 'Example.ml').read_text(), 'let value = 42\n')
 
     def test_runtime_bundling_excludes_system_dlls_and_supports_static_gmp(self):
         prefix = self.root / 'fstar'
