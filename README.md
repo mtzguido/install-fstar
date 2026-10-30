@@ -146,11 +146,12 @@ the cache when its artifacts change. The complete installed library trees are
 hashed, so changing an unrelated installed library can also cause a miss.
 
 Private switches use a separate dependency cache keyed by platform/compiler,
-recipe and dependency manifest, with a fallback to the same platform/compiler
+OPAM version, provisioning schema and dependency manifest, with a fallback to the same platform/compiler
 when the manifest changes. Dependencies are always reconciled after restoring;
 the F* cache never uses a partial match. Private prefixes are stable across jobs
 because OCaml installations contain absolute paths. Native mode leaves OPAM
-cache ownership entirely with the caller.
+cache ownership entirely with the caller. Changing F*'s commit or build recipe
+does not invalidate the private compiler cache.
 
 Only validated, finished F* archives are saved. `cache: false` skips all of this
 action's restores and saves, forcing a source rebuild or binary download.

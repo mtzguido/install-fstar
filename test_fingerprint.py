@@ -112,6 +112,19 @@ class FingerprintTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'changed the compiler'):
                 build.dependencies(state)
 
+    def test_private_compiler_cache_survives_fstar_recipe_and_commit_changes(self):
+        state = {'ocaml': '5.4.0', 'commit': 'a' * 40}
+        with patch.object(build, 'system_abi', return_value={'system': 'Linux', 'abi': 'one'}):
+            before = build.dependency_cache_base(state, '2.6.1')
+            with patch.object(install, 'recipe', return_value={'build.sh': 'changed'}):
+                self.assertEqual(before, build.dependency_cache_base({**state, 'commit': 'b' * 40}, '2.6.1'))
+            self.assertNotEqual(before, build.dependency_cache_base({**state, 'ocaml': '5.3.0'}, '2.6.1'))
+            self.assertNotEqual(before, build.dependency_cache_base(state, '2.7.0'))
+            with patch.object(build, 'DEPENDENCY_CACHE_SCHEMA', 2):
+                self.assertNotEqual(before, build.dependency_cache_base(state, '2.6.1'))
+        with patch.object(build, 'system_abi', return_value={'system': 'Linux', 'abi': 'two'}):
+            self.assertNotEqual(before, build.dependency_cache_base(state, '2.6.1'))
+
     def test_native_environment_does_not_replace_caller_flags(self):
         state = {'native': True, 'system': 'Linux', 'opamroot': '/caller/root', 'opamswitch': '/caller/project'}
         with patch.dict(os.environ, {'OCAMLPATH': '/caller/lib', 'CFLAGS': '-O3'}):

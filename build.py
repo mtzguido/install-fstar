@@ -7,8 +7,17 @@ import shutil
 import subprocess
 import sys
 
-from install import ACTION, append, file_hash, identity, package_cache, recipe, unpack
+from install import ACTION, append, file_hash, identity, package_cache, unpack
 from fingerprint import system_abi
+
+
+# Bump when changing the private switch layout or compiler provisioning. F*
+# recipe changes must invalidate F* packages without rebuilding the OCaml switch.
+DEPENDENCY_CACHE_SCHEMA = 1
+
+
+def dependency_cache_base(state, opam_version):
+    return identity([DEPENDENCY_CACHE_SCHEMA, system_abi(), state['ocaml'], opam_version])
 
 
 def run(args, env, cwd=None, capture=False):
@@ -106,7 +115,7 @@ def prepare(state):
         raise ValueError('The source has no fstar.opam dependency manifest')
     state['source_path'] = str(source)
     if not state['native']:
-        base = identity([system_abi(), state['ocaml'], run(['opam', '--version'], env, capture=True), recipe()])
+        base = dependency_cache_base(state, run(['opam', '--version'], env, capture=True))
         prefix = f'install-fstar-opam-v2-{base}-'
         key = prefix + file_hash(source / 'fstar.opam')
         root = Path(os.environ['RUNNER_TEMP']) / 'ifstar-deps' / base[:16] / 'opam'
