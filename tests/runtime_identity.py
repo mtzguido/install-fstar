@@ -30,3 +30,5 @@ for key in before['data']:
                 print(name, a.get(name), '->', b.get(name), flush=True)
     else:
         print(a, '->', b, flush=True)
+
+assert before['fingerprint'] == after['fingerprint'], 'Bundling runtime libraries changed the compiler environment'

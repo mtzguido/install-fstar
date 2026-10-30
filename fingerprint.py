@@ -97,8 +97,12 @@ def linked_libraries(binary, system):
         return [Path(p) for p in re.findall(r'(?:=>\s+)?(/[^\n]+?)\s+\(0x[0-9a-f]+\)', result.stdout)]
     if system == 'Windows_NT':
         # cygcheck reports transitive dependencies using native Windows paths.
+        # API-set names are virtual OS contracts, not DLLs found via PATH.
+        # cygcheck can incorrectly resolve them to compatibility forwarders in
+        # an unrelated JDK/SDK. The OS schema and runtime are hashed below.
         result = output(['cygcheck', binary])
-        return [Path(line.strip()) for line in result.splitlines() if Path(line.strip()).is_file()]
+        return [Path(line.strip()) for line in result.splitlines()
+                if Path(line.strip()).is_file() and not windows_api_set(Path(line.strip()))]
     listing = output(['otool', '-L', binary])
     rpaths = re.findall(r'cmd LC_RPATH\s+cmdsize \d+\s+path (.*?) \(offset',
                        output(['otool', '-l', binary]))
@@ -121,6 +125,10 @@ def linked_libraries(binary, system):
             elif not name.startswith(('/usr/lib/', '/System/Library/')):
                 raise ValueError(f'Missing shared library {name} linked by {binary}')
     return libraries
+
+
+def windows_api_set(path):
+    return Path(path).name.lower().startswith(('api-ms-', 'ext-ms-'))
 
 
 def capture(prefix):
@@ -160,6 +168,10 @@ def capture(prefix):
         tools[name] = executable
         files.add(executable)
     abi = system_abi()
+    if abi['system'] == 'Windows_NT':
+        system = Path(os.environ['SystemRoot']) / 'System32'
+        for name in ('apisetschema.dll', 'kernelbase.dll', 'ntdll.dll', 'ucrtbase.dll'):
+            files.add(system / name)
     inspected = set()
     while files.binaries - inspected:
         binary = sorted(files.binaries - inspected)[0]

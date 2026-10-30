@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 from install import ACTION, append, file_hash, identity, package_cache, unpack
-from fingerprint import linked_libraries, system_abi
+from fingerprint import linked_libraries, system_abi, windows_api_set
 
 
 # Bump when changing the private switch layout or compiler provisioning. F*
@@ -184,6 +184,8 @@ def prepare_packaging(source, system):
 fi'''
         contents = re.sub(r'^if windows; then\n.*?^fi', lambda _: replacement,
                           contents, count=1, flags=re.MULTILINE | re.DOTALL)
+        # Preserve copied dependency DLLs byte-for-byte, including signatures.
+        contents = contents.replace('"$strip_prefix"/bin/*', '"$strip_prefix"/bin/fstar.exe')
         makefile = source / 'Makefile'
         text = makefile.read_text(encoding='utf-8')
         # Native Windows F* cannot interpret Cygwin's /cygdrive paths in its
@@ -214,7 +216,7 @@ def windows_runtime(prefix):
     system = Path(os.environ['SystemRoot']).resolve()
     for library in linked_libraries(destination / 'fstar.exe', 'Windows_NT'):
         library = library.resolve()
-        if library.suffix.lower() != '.dll' or library.is_relative_to(system):
+        if library.suffix.lower() != '.dll' or library.is_relative_to(system) or windows_api_set(library):
             continue
         target = destination / library.name
         if library != target.resolve():

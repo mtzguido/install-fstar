@@ -42,6 +42,8 @@ $STRIP "$strip_prefix"/bin/*
         self.assertNotIn('LIBGMP', contents)
         self.assertIn('windows-runtime "$(cygpath -m "$PREFIX")"', contents)
         self.assertIn('strip_prefix="$(cygpath -m "$PREFIX")"', contents)
+        self.assertIn('$STRIP "$strip_prefix"/bin/fstar.exe', contents)
+        self.assertNotIn('"$strip_prefix"/bin/*', contents)
         self.assertEqual((self.root / 'Makefile').read_text(), 'FSTAR_LIB=$(call cygpath,ulib)\n' * 2)
         self.assertIn('--prefix=$(call cygpath,$(PREFIX))', (self.root / 'mk/stage.mk').read_text())
         self.assertIn('DUNE=flock $(LOCKFILE) "$${INSTALL_FSTAR_PYTHON}"',
@@ -69,15 +71,17 @@ $STRIP "$strip_prefix"/bin/*
         system.mkdir()
         dependencies = self.root / 'compiler-runtime'
         dependencies.mkdir()
-        for path in (destination / 'fstar.exe', system / 'kernel32.dll', dependencies / 'libwinpthread-1.dll'):
+        api_set = dependencies / 'api-ms-win-crt-runtime-l1-1-0.dll'
+        for path in (destination / 'fstar.exe', system / 'kernel32.dll', dependencies / 'libwinpthread-1.dll', api_set):
             path.write_bytes(b'fixture binary')
-        files = [destination / 'fstar.exe', system / 'kernel32.dll', dependencies / 'libwinpthread-1.dll']
+        files = [destination / 'fstar.exe', system / 'kernel32.dll', dependencies / 'libwinpthread-1.dll', api_set]
         with patch.dict(os.environ, {'SystemRoot': str(system)}), \
              patch.object(build, 'linked_libraries', return_value=files):
             build.windows_runtime(prefix)
         self.assertTrue((destination / 'libwinpthread-1.dll').is_file())
         self.assertFalse((destination / 'kernel32.dll').exists())
         self.assertFalse((destination / 'libgmp-10.dll').exists())
+        self.assertFalse((destination / api_set.name).exists())
 
 
 if __name__ == '__main__':

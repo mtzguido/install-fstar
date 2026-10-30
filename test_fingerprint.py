@@ -100,6 +100,14 @@ class FingerprintTests(unittest.TestCase):
             artifact.write_bytes(b'rebuilt at the same package version')
             self.assertNotEqual(before, self.capture(package_directory=external))
 
+    def test_windows_runtime_scan_ignores_sdk_api_set_forwarders(self):
+        api_set = self.root / 'api-ms-win-crt-runtime-l1-1-0.dll'
+        dependency = self.root / 'libgmp-10.dll'
+        api_set.write_bytes(b'virtual API compatibility forwarder')
+        dependency.write_bytes(b'actual dependency')
+        with patch.object(fingerprint, 'output', return_value=f'{api_set}\n  {dependency}\n'):
+            self.assertEqual(fingerprint.linked_libraries(self.root / 'fstar.exe', 'Windows_NT'), [dependency])
+
     def test_package_identity_uses_commit_recipe_and_environment_not_selector(self):
         state = {'source': True, 'system': 'Linux', 'machine': 'x86_64', 'commit': 'a' * 40,
                  'repository': install.REPOSITORY, 'version': 'branch'}

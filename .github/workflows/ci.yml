@@ -15,3 +15,59 @@ jobs:
           opam-pin: false
       - run: opam install ocamlfind dune
       - run: python tests/runtime_identity.py
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: '2026-10-18'
+            native: 'true'
+            ocaml: '5.4.0'
+          - version: v2026.10.25
+            native: 'true'
+            ocaml: '5.4.0'
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ocaml/setup-ocaml@v3
+        if: matrix.native == 'true'
+        with:
+          ocaml-compiler: ${{ matrix.ocaml }}
+          opam-pin: false
+      - name: Record caller prefix
+        if: matrix.native == 'true'
+        shell: python
+        run: |
+          import os, pathlib, subprocess
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'caller-prefix').write_text(subprocess.check_output(['opam', 'var', 'prefix'], text=True))
+      - uses: ./
+        id: first
+        with:
+          version: ${{ matrix.version }}
+          native: ${{ matrix.native }}
+          ocaml-version: ${{ matrix.ocaml }}
+      - name: Verify compiler and plugins
+        shell: python
+        env:
+          EXPECTED_COMMIT: ${{ steps.first.outputs.commit }}
+          EXPECTED_METHOD: source
+          ACTUAL_METHOD: ${{ steps.first.outputs.method }}
+          EXPECTED_OCAML: ${{ matrix.ocaml }}
+          NATIVE: ${{ matrix.native }}
+        run: |
+          import runpy
+          runpy.run_path('tests/smoke.py')
+      - uses: ./
+        id: cached
+        with:
+          version: ${{ matrix.version }}
+          native: ${{ matrix.native }}
+          ocaml-version: ${{ matrix.ocaml }}
+      - name: Require cache reuse
+        shell: python
+        env:
+          CACHE_HIT: ${{ steps.cached.outputs.cache-hit }}
+        run: |
+          import os
+          assert os.environ['CACHE_HIT'] == 'true'
