@@ -1,12 +1,14 @@
 """Build a package without exporting a private build switch to the caller."""
 
 import os
+import json
 from pathlib import Path
 import shutil
 import subprocess
-import tempfile
+import sys
 
-from install import ACTION, file_hash, unpack
+from install import ACTION, append, file_hash, identity, package_cache, recipe, unpack
+from fingerprint import system_abi
 
 
 def run(args, env, cwd=None, capture=False):
@@ -50,58 +52,114 @@ def prepare_system(state, env, work):
         prepend(env, directory)
 
 
-def build(state):
+def environment(state):
     env = os.environ.copy()
     env.update(OPAMYES='1', OPAMCONFIRMLEVEL='unsafe-yes')
-    with tempfile.TemporaryDirectory(prefix='build-', dir=state['work']) as directory:
-        work = Path(directory)
-        prepare_system(state, env, work)
-        if state['native']:
-            env.update(OPAMROOT=state['opamroot'], OPAMSWITCH=state['opamswitch'])
-        else:
-            for name in ('OPAMSWITCH', 'OPAM_SWITCH_PREFIX', 'CAML_LD_LIBRARY_PATH',
-                         'OCAML_TOPLEVEL_PATH', 'OCAMLTOP_INCLUDE_PATH', 'OCAMLPATH', 'OCAMLLIB'):
-                env.pop(name, None)
-            env['OPAMROOT'] = (work / 'opam').as_posix()
+    if state['system'] == 'Windows_NT':
+        env.setdefault('CYGWIN', 'winsymlinks:native')
+        env.setdefault('MSYS', 'winsymlinks:native')
+    if not state['native']:
+        for name in ('OPAMSWITCH', 'OPAM_SWITCH_PREFIX', 'CAML_LD_LIBRARY_PATH',
+                     'OCAML_TOPLEVEL_PATH', 'OCAMLTOP_INCLUDE_PATH', 'OCAMLPATH', 'OCAMLLIB'):
+            env.pop(name, None)
+    if 'opamroot' in state:
+        env.update(OPAMROOT=state['opamroot'], OPAMSWITCH=state['opamswitch'])
+    prepend(env, *state.get('tool_paths', []))
+    if state['system'] == 'Windows_NT' and 'opamroot' in state:
+        cygwin_bin = Path(state['opamroot']) / '.cygwin/root/bin'
+        if cygwin_bin.is_dir():
+            prepend(env, cygwin_bin)
+    return env
+
+
+def prepare(state):
+    """Fetch the dependency manifest before restoring a private OPAM cache."""
+    work = Path(state['work'])
+    env = environment(state)
+    original_path = env['PATH']
+    prepare_system(state, env, work)
+    state['tool_paths'] = env['PATH'].removesuffix(original_path).rstrip(os.pathsep).split(os.pathsep)
+    state['tool_paths'] = [p for p in state['tool_paths'] if p]
+    source = work / 'source'
+    if state.get('source_url'):
+        archive = work / 'source.tar.gz'
+        fetch(state['source_url'], state.get('source_digest'), archive, env)
+        source.mkdir()
+        unpack(archive, source)
+        source = source / 'fstar'
+    else:
+        run(['git', 'init', '-q', source], env)
+        if state['system'] == 'Windows_NT':
+            run(['git', '-C', source, 'config', 'core.symlinks', 'true'], env)
+        run(['git', '-C', source, 'remote', 'add', 'origin',
+             f"https://github.com/{state['repository']}.git"], env)
+        run(['git', '-C', source, 'fetch', '--depth=1', 'origin', state['commit']], env)
+        run(['git', '-C', source, 'checkout', '--detach', 'FETCH_HEAD'], env)
+        if run(['git', '-C', source, 'rev-parse', 'HEAD'], env, capture=True) != state['commit']:
+            raise ValueError('The checkout does not match the requested commit')
+    if not (source / 'fstar.opam').is_file():
+        raise ValueError('The source has no fstar.opam dependency manifest')
+    state['source_path'] = str(source)
+    if not state['native']:
+        base = identity([system_abi(), state['ocaml'], run(['opam', '--version'], env, capture=True), recipe()])
+        prefix = f'install-fstar-opam-v2-{base}-'
+        key = prefix + file_hash(source / 'fstar.opam')
+        root = Path(os.environ['RUNNER_TEMP']) / 'install-fstar-dependencies' / base / 'opam'
+        # The path must be stable: compiler configurations contain absolute
+        # prefixes. Never reuse an unrelated or partially prepared local switch.
+        if root.exists():
+            shutil.rmtree(root)
+        state.update(opamroot=root.as_posix(), opamswitch='build')
+        append('GITHUB_OUTPUT', [f'dependencies-path={root}', f'dependencies-key={key}',
+                                 f'dependencies-prefix={prefix}'])
+
+
+def dependencies(state):
+    """Reconcile restored dependencies even on an exact dependency-cache hit."""
+    env = environment(state)
+    work = Path(state['work'])
+    if not state['native']:
+        root = Path(state['opamroot'])
+        if not (root / 'config').exists():
             args = ['opam', 'init', '--bare', '--no-setup', '--disable-sandboxing']
             if state['system'] == 'Windows_NT':
                 args.append('--cygwin-internal-install')
-            run(args, env, cwd=work)
-            run(['opam', 'switch', 'create', 'build', 'ocaml-base-compiler.' + state['ocaml']], env, cwd=work)
-            env['OPAMSWITCH'] = 'build'
+            # OPAMSWITCH cannot name a switch until it has been created.
+            initial = env.copy()
+            initial.pop('OPAMSWITCH', None)
+            run(args, initial, cwd=work)
+            run(['opam', 'switch', 'create', 'build', 'ocaml-base-compiler.' + state['ocaml']], initial, cwd=work)
+        env = environment(state)  # opam init may have installed Cygwin.
+    run(['opam', 'install', '--deps-only', './fstar.opam'], env, cwd=state['source_path'])
+    actual = run(['opam', 'exec', '--', 'ocamlc', '-version'], env, capture=True)
+    if actual != state['ocaml']:
+        raise ValueError(f"Dependency reconciliation changed the compiler: {state['ocaml']} -> {actual}")
 
-        source = work / 'source'
-        if state.get('source_url'):
-            archive = work / 'source.tar.gz'
-            fetch(state['source_url'], state.get('source_digest'), archive, env)
-            source.mkdir()
-            unpack(archive, source)
-            source = source / 'fstar'
-            if not (source / 'Makefile').is_file():
-                raise ValueError('The source package has no fstar/Makefile')
-        else:
-            run(['git', 'init', '-q', source], env)
-            if state['system'] == 'Windows_NT':
-                run(['git', '-C', source, 'config', 'core.symlinks', 'true'], env)
-            run(['git', '-C', source, 'remote', 'add', 'origin',
-                 f"https://github.com/{state['repository']}.git"], env)
-            run(['git', '-C', source, 'fetch', '--depth=1', 'origin', state['commit']], env)
-            run(['git', '-C', source, 'checkout', '--detach', 'FETCH_HEAD'], env)
-            if run(['git', '-C', source, 'rev-parse', 'HEAD'], env, capture=True) != state['commit']:
-                raise ValueError('The checkout does not match the requested commit')
-            run(['git', '-C', source, 'submodule', 'update', '--init', '--recursive', '--depth=1'], env)
 
-        script, output = str(ACTION / 'build.sh'), state['archive']
-        bash = shutil.which('bash', path=env['PATH'])
-        if state['system'] == 'Windows_NT':
-            cygwin_bin = Path(env['OPAMROOT']) / '.cygwin/root/bin'
-            if (cygwin_bin / 'bash.exe').exists():
-                bash = str(cygwin_bin / 'bash.exe')
-                prepend(env, cygwin_bin)
-            if not bash or not run([bash, '-c', 'uname -s'], env, capture=True).startswith('CYGWIN'):
-                raise ValueError('Windows source builds require Cygwin (the default ocaml/setup-ocaml environment)')
-            cygpath = str(Path(bash).with_name('cygpath.exe'))
-            script, source, output = [run([cygpath, '-u', str(p)], env, capture=True) for p in (script, source, output)]
-        if not bash:
-            raise ValueError('Building F* requires Bash')
-        run([bash, script, source, output, str(os.cpu_count() or 2)], env)
+def fingerprint(state):
+    if state['source']:
+        env = environment(state)
+        prefix = run(['opam', 'var', 'prefix'], env, capture=True)
+        report = Path(state['work']) / 'environment.json'
+        run(['opam', 'exec', '--', sys.executable, ACTION / 'fingerprint.py', prefix, report], env)
+        result = json.loads(report.read_text(encoding='utf-8'))
+        state['environment'] = result['fingerprint']
+        append('GITHUB_OUTPUT', [f"environment={state['environment']}"])
+    package_cache(state, state.get('environment'))
+
+
+def build(state):
+    env = environment(state)
+    source = Path(state['source_path'])
+    if not state.get('source_url'):
+        run(['git', '-C', source, 'submodule', 'update', '--init', '--recursive', '--depth=1'], env)
+    script, output = str(ACTION / 'build.sh'), state['archive']
+    bash = shutil.which('bash', path=env['PATH'])
+    if state['system'] == 'Windows_NT':
+        if not bash or not run([bash, '-c', 'uname -s'], env, capture=True).startswith('CYGWIN'):
+            raise ValueError('Windows source builds require Cygwin (the default ocaml/setup-ocaml environment)')
+        cygpath = str(Path(bash).with_name('cygpath.exe'))
+        script, source, output = [run([cygpath, '-u', str(p)], env, capture=True) for p in (script, source, output)]
+    if not bash:
+        raise ValueError('Building F* requires Bash')
+    run([bash, script, source, output, str(os.cpu_count() or 2)], env)

@@ -229,13 +229,17 @@ class InstallationTests(unittest.TestCase):
                 install.resolve()
                 output = Path(self.env["GITHUB_OUTPUT"]).read_text().splitlines()
                 state_path = [line.removeprefix("state=") for line in output if line.startswith("state=")][-1]
-                states.append(json.loads(Path(state_path).read_text()))
+                state = json.loads(Path(state_path).read_text())
+                # Source package lookup is delayed until dependencies exist.
+                self.assertNotIn('archive', state)
+                install.package_cache(state, environment=ocaml)
+                states.append(state)
         self.assertEqual(states[0]["archive"], states[1]["archive"])
         self.assertEqual(states[0]["cache-key"], states[1]["cache-key"])
         self.assertNotEqual(states[0]["work"], states[1]["work"])
         self.assertNotEqual(states[0]["cache-key"], states[2]["cache-key"])
 
-    def test_native_captures_active_switch_and_ignores_cache_and_compiler_inputs(self):
+    def test_native_captures_active_switch_and_honors_cache_but_ignores_compiler_input(self):
         env = {"RUNNER_TEMP": str(self.root), "INSTALL_FSTAR_VERSION": "v2026.10.25",
                "INSTALL_FSTAR_OCAML": "ignored", "INSTALL_FSTAR_CACHE": "true", "INSTALL_FSTAR_NATIVE": "true"}
         selected = {"source": True, "native": True, "commit": SHA, "version": "v2026.10.25", "repository": install.REPOSITORY}
@@ -244,7 +248,8 @@ class InstallationTests(unittest.TestCase):
             install.resolve()
         outputs = dict(line.split("=", 1) for line in Path(self.env["GITHUB_OUTPUT"]).read_text().splitlines())
         state = json.loads(Path(outputs["state"]).read_text())
-        self.assertEqual(outputs["cache"], "false")
+        self.assertEqual(outputs["cache"], "true")
+        self.assertEqual(outputs['private'], 'false')
         self.assertEqual(outputs["source"], "true")
         self.assertEqual(state["opamroot"], "/caller/opam")
         self.assertEqual(state["opamswitch"], "/caller/project")

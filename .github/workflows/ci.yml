@@ -39,7 +39,6 @@ jobs:
         run: shellcheck build.sh
 
   binaries:
-    needs: unit
     strategy:
       fail-fast: false
       matrix:
@@ -97,7 +96,6 @@ jobs:
           retention-days: 7
 
   source:
-    needs: unit
     strategy:
       fail-fast: false
       matrix:
@@ -174,18 +172,84 @@ jobs:
           runpy.run_path('tests/smoke.py')
       - uses: ./
         id: cached
-        if: matrix.native == 'false'
         with:
-          version: ${{ steps.install.outputs.commit }}
+          version: ${{ matrix.version }}
+          native: ${{ matrix.native }}
           ocaml-version: ${{ matrix.ocaml }}
       - name: Check source package cache reuse
-        if: matrix.native == 'false'
         shell: python
         env:
           CACHE_HIT: ${{ steps.cached.outputs.cache-hit }}
+          BEFORE: ${{ steps.install.outputs.environment }}
+          AFTER: ${{ steps.cached.outputs.environment }}
+          DEPENDENCIES_HIT: ${{ steps.cached.outputs.dependency-cache-hit }}
+          NATIVE: ${{ matrix.native }}
         run: |
           import os
           assert os.environ['CACHE_HIT'] == 'true'
+          assert os.environ['BEFORE'] == os.environ['AFTER']
+          assert os.environ['DEPENDENCIES_HIT'] == ('false' if os.environ['NATIVE'] == 'true' else 'true')
+      - name: Verify cached native plugin compatibility
+        if: matrix.native == 'true'
+        shell: python
+        env:
+          EXPECTED_COMMIT: ${{ steps.cached.outputs.commit }}
+          EXPECTED_METHOD: source
+          ACTUAL_METHOD: ${{ steps.cached.outputs.method }}
+          EXPECTED_OCAML: ${{ matrix.ocaml }}
+          NATIVE: 'true'
+          LEGACY: ${{ matrix.legacy || 'false' }}
+        run: |
+          import runpy
+          runpy.run_path('tests/smoke.py')
+      - name: Compile an additional dependency without changing package versions
+        if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'
+        shell: python
+        run: |
+          import pathlib, subprocess
+          prefix = pathlib.Path(subprocess.check_output(['opam', 'var', 'prefix'], text=True).strip())
+          probe = prefix / 'lib/install_fstar_cache_probe'
+          probe.mkdir(exist_ok=True)
+          (probe / 'META').write_text('version = "1.0"\n')
+          (probe / 'probe.ml').write_text('let answer = 42\n')
+          (probe / 'stub.c').write_text('int probe(void) { return 42; }\n')
+          for source in ('probe.ml', 'stub.c'):
+              subprocess.run(['opam', 'exec', '--', 'ocamlopt', '-c', source], cwd=probe, check=True)
+      - uses: ./
+        id: changed
+        if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'
+        with:
+          version: ${{ matrix.version }}
+          native: 'true'
+      - name: Check artifact changes invalidate the native cache
+        if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'
+        shell: python
+        env:
+          CACHE_HIT: ${{ steps.changed.outputs.cache-hit }}
+          BEFORE: ${{ steps.cached.outputs.environment }}
+          AFTER: ${{ steps.changed.outputs.environment }}
+        run: |
+          import os
+          assert os.environ['CACHE_HIT'] == 'false'
+          assert os.environ['BEFORE'] != os.environ['AFTER']
+      - uses: ./
+        id: fresh
+        if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'
+        with:
+          version: ${{ matrix.version }}
+          native: 'true'
+          cache: 'false'
+      - name: Check native cache false forces a rebuild in the same environment
+        if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'
+        shell: python
+        env:
+          CACHE_HIT: ${{ steps.fresh.outputs.cache-hit }}
+          BEFORE: ${{ steps.changed.outputs.environment }}
+          AFTER: ${{ steps.fresh.outputs.environment }}
+        run: |
+          import os
+          assert os.environ['CACHE_HIT'] == 'false'
+          assert os.environ['BEFORE'] == os.environ['AFTER']
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -122,6 +122,34 @@ def file_hash(path):
     return digest.hexdigest()
 
 
+def identity(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def recipe():
+    return {name: file_hash(ACTION / name) for name in
+            ('action.yml', 'install.py', 'build.py', 'build.sh', 'fingerprint.py')}
+
+
+def package_identity(state, environment=None):
+    # Selectors, temporary directories and the cache toggle are not build inputs.
+    selected = {key: state.get(key) for key in
+                ('commit', 'repository', 'system', 'machine', 'source', 'asset',
+                 'digest', 'source_url', 'source_digest')}
+    return identity([selected, recipe(), environment])
+
+
+def package_cache(state, environment=None):
+    fingerprint = package_identity(state, environment)
+    state['cache-key'] = f"install-fstar-v2-{state['system']}-{state['machine']}-{fingerprint}"
+    suffix = 'zip' if state['system'] == 'Windows_NT' and not state['source'] else 'tar.gz'
+    archive = Path(os.environ['RUNNER_TEMP']) / 'install-fstar-cache' / fingerprint / f'fstar.{suffix}'
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    archive.unlink(missing_ok=True)
+    state['archive'] = str(archive)
+    append('GITHUB_OUTPUT', [f'{key}={state[key]}' for key in ('archive', 'cache-key')])
+
+
 def resolve():
     cache = os.environ["INSTALL_FSTAR_CACHE"]
     if cache not in {"true", "false"}:
@@ -143,7 +171,7 @@ def resolve():
             state["ocaml"] = subprocess.check_output(["opam", "exec", "--", "ocamlc", "-version"], text=True).strip()
         except (OSError, subprocess.CalledProcessError) as error:
             raise ValueError("native: true requires an active OPAM switch; run ocaml/setup-ocaml first") from error
-        print(f"Native build using OPAM switch {state['opamswitch']} (OCaml {state['ocaml']}); package cache disabled")
+        print(f"Native build using OPAM switch {state['opamswitch']} (OCaml {state['ocaml']})")
     elif state["source"]:
         ocaml = os.environ["INSTALL_FSTAR_OCAML"]
         if not re.fullmatch(r"\d+\.\d+\.\d+", ocaml):
@@ -156,23 +184,13 @@ def resolve():
         else:
             os_version = platform.mac_ver()[0] if system == 'Darwin' else platform.version()
         state.update(ocaml=ocaml, os_version=os_version)
-    implementation = [file_hash(ACTION / name) for name in ("action.yml", "install.py", "build.py", "build.sh")]
-    identity = json.dumps([state, system, machine, implementation], sort_keys=True).encode()
-    fingerprint = hashlib.sha256(identity).hexdigest()
-    state["cache-key"] = f"install-fstar-v1-{system}-{machine}-{fingerprint}"
-    # This path must be stable across jobs: actions/cache hashes the path as
-    # well as the key when determining whether a cache entry is compatible.
-    suffix = 'zip' if system == 'Windows_NT' and not state['source'] else 'tar.gz'
-    archive = Path(os.environ["RUNNER_TEMP"]) / "install-fstar-cache" / fingerprint / f"fstar.{suffix}"
-    archive.parent.mkdir(parents=True, exist_ok=True)
-    archive.unlink(missing_ok=True)
     work = Path(tempfile.mkdtemp(prefix="install-fstar-", dir=os.environ["RUNNER_TEMP"]))
-    state.update(archive=str(archive), work=str(work))
+    state.update(cache=cache == 'true', work=str(work))
     state_path = work / "state.json"
     state_path.write_text(json.dumps(state), encoding="utf-8")
-    append("GITHUB_OUTPUT", [f"{key}={state[key]}" for key in ("version", "commit", "archive", "cache-key")])
+    append("GITHUB_OUTPUT", [f"{key}={state[key]}" for key in ("version", "commit")])
     append("GITHUB_OUTPUT", [f"state={state_path}", f"source={str(state['source']).lower()}"])
-    append("GITHUB_OUTPUT", [f"cache={str(cache == 'true' and not native).lower()}"])
+    append("GITHUB_OUTPUT", [f"cache={cache}", f"private={str(state['source'] and not native).lower()}"])
     append('GITHUB_OUTPUT', [f"method={'source' if state['source'] else 'binary'}"])
     print(f"Selected {state['version']} ({state['commit']})")
 
@@ -254,6 +272,10 @@ def main():
     state = json.loads(Path(os.environ["INSTALL_FSTAR_STATE"]).read_text(encoding="utf-8"))
     if command == "download":
         download(state)
+    elif command in ('prepare', 'dependencies', 'fingerprint'):
+        from build import prepare, dependencies, fingerprint
+        {'prepare': prepare, 'dependencies': dependencies, 'fingerprint': fingerprint}[command](state)
+        Path(os.environ['INSTALL_FSTAR_STATE']).write_text(json.dumps(state), encoding='utf-8')
     elif command == "build":
         from build import build
         build(state)

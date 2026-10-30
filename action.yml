@@ -6,10 +6,10 @@ inputs:
     description: Exact release tag, commit, branch, or nightly date (YYYY-MM-DD)
     required: true
   native:
-    description: Rebuild in the caller's active OPAM switch, including releases and nightlies; bypass the package cache
+    description: Build for the caller's active OCaml environment, including releases and nightlies
     default: 'false'
   cache:
-    description: Restore and save the finished package in the GitHub Actions cache
+    description: Cache finished packages and private OPAM dependencies; false forces a fresh build/download
     default: 'true'
   ocaml-version:
     description: OCaml compiler for source builds when native is false (native uses the active switch)
@@ -34,7 +34,12 @@ outputs:
   cache-hit:
     description: Whether the exact finished package was restored from the cache
     value: ${{ steps.cache.outputs.cache-hit == 'true' }}
-
+  environment:
+    description: Content fingerprint of the reconciled OCaml environment (source builds)
+    value: ${{ steps.fingerprint.outputs.environment }}
+  dependency-cache-hit:
+    description: Whether the private OPAM cache matched exactly (always false in native mode)
+    value: ${{ steps.dependencies-cache.outputs.cache-hit == 'true' }}
   method:
     description: Installation method (binary or source)
     value: ${{ steps.resolve.outputs.method }}
@@ -57,13 +62,63 @@ runs:
         sys.argv = ['install.py', 'resolve']
         runpy.run_path(os.path.join(os.environ['GITHUB_ACTION_PATH'], 'install.py'), run_name='__main__')
 
+    - name: Prepare source and build tools
+      id: prepare
+      if: steps.resolve.outputs.source == 'true'
+      shell: python
+      env:
+        INSTALL_FSTAR_STATE: ${{ steps.resolve.outputs.state }}
+      run: |
+        import os, runpy, sys
+        sys.path.insert(0, os.environ['GITHUB_ACTION_PATH'])
+        sys.argv = ['install.py', 'prepare']
+        runpy.run_path(os.path.join(os.environ['GITHUB_ACTION_PATH'], 'install.py'), run_name='__main__')
+
+    - name: Restore private OPAM dependencies
+      id: dependencies-cache
+      if: steps.resolve.outputs.private == 'true' && steps.resolve.outputs.cache == 'true'
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ steps.prepare.outputs.dependencies-path }}
+        key: ${{ steps.prepare.outputs.dependencies-key }}
+        restore-keys: ${{ steps.prepare.outputs.dependencies-prefix }}
+
+    - name: Reconcile OCaml dependencies
+      if: steps.resolve.outputs.source == 'true'
+      shell: python
+      env:
+        INSTALL_FSTAR_STATE: ${{ steps.resolve.outputs.state }}
+      run: |
+        import os, runpy, sys
+        sys.path.insert(0, os.environ['GITHUB_ACTION_PATH'])
+        sys.argv = ['install.py', 'dependencies']
+        runpy.run_path(os.path.join(os.environ['GITHUB_ACTION_PATH'], 'install.py'), run_name='__main__')
+
+    - name: Cache private OPAM dependencies
+      if: steps.resolve.outputs.private == 'true' && steps.resolve.outputs.cache == 'true' && steps.dependencies-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ steps.prepare.outputs.dependencies-path }}
+        key: ${{ steps.prepare.outputs.dependencies-key }}
+
+    - name: Fingerprint the build environment
+      id: fingerprint
+      shell: python
+      env:
+        INSTALL_FSTAR_STATE: ${{ steps.resolve.outputs.state }}
+      run: |
+        import os, runpy, sys
+        sys.path.insert(0, os.environ['GITHUB_ACTION_PATH'])
+        sys.argv = ['install.py', 'fingerprint']
+        runpy.run_path(os.path.join(os.environ['GITHUB_ACTION_PATH'], 'install.py'), run_name='__main__')
+
     - name: Restore F* package
       id: cache
       if: steps.resolve.outputs.cache == 'true'
       uses: actions/cache/restore@v5
       with:
-        path: ${{ steps.resolve.outputs.archive }}
-        key: ${{ steps.resolve.outputs.cache-key }}
+        path: ${{ steps.fingerprint.outputs.archive }}
+        key: ${{ steps.fingerprint.outputs.cache-key }}
 
     - name: Download F* package
       if: steps.cache.outputs.cache-hit != 'true' && steps.resolve.outputs.source == 'false'
@@ -104,5 +159,5 @@ runs:
       if: steps.resolve.outputs.cache == 'true' && steps.cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v5
       with:
-        path: ${{ steps.resolve.outputs.archive }}
-        key: ${{ steps.resolve.outputs.cache-key }}
+        path: ${{ steps.fingerprint.outputs.archive }}
+        key: ${{ steps.fingerprint.outputs.cache-key }}

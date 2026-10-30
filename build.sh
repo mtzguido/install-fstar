@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$1"
 archive=$2
 jobs=$3
-opam install --deps-only ./fstar.opam
+# Dependencies were reconciled and fingerprinted before the package cache lookup.
 make_command='make'
 if [[ "$(uname -s)" == Darwin ]]; then
   make_command=gmake

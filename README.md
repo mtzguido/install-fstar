@@ -54,24 +54,26 @@ loads them. Use `native: true` after setting up the caller's OPAM switch:
 - run: opam exec -- make
 ```
 
-Native mode rebuilds releases and nightlies too. It recompiles the selected
-release's portable OCaml source package when available, or bootstraps from the
-exact Git commit otherwise. It installs the revision's dependencies in the
-active OPAM switch, then builds with that compiler and those libraries.
+Native mode installs the revision's dependencies in the active OPAM switch,
+fingerprints the resulting compiler and compiled libraries, then restores a
+matching F* build or compiles one on a miss. This applies to releases and
+nightlies too: compilation uses the portable OCaml source package when
+available, or bootstraps from the exact Git commit otherwise.
 Install your project's dependencies first and use the same switch for plugins.
 Changing its compiler or dependency interfaces afterwards requires rebuilding F*.
 
-Native mode ignores `ocaml-version` and always bypasses package cache restore
-and save. Matching compiler/package version strings alone does not establish
-OCaml interface compatibility. The caller can still cache its OPAM switch.
+`native: true` means **built for this OCaml environment**. `cache: false` forces
+a fresh build. Native mode ignores `ocaml-version`; the caller owns the OPAM
+cache (for example through `ocaml/setup-ocaml`). This action never restores or
+saves the caller's switch. It reconciles dependencies even on an F* cache hit.
 
 ## Inputs and outputs
 
 | Input | Meaning | Default |
 | --- | --- | --- |
 | `version` | Exact tag, commit, branch, or nightly date | Required |
-| `native` | Recompile in the active OPAM switch; always bypass the package cache | `false` |
-| `cache` | Restore/save the finished binary package; ignored in native mode | `true` |
+| `native` | Build for the active OPAM environment, reusing a compatible cached build | `false` |
+| `cache` | Cache finished packages and private OPAM dependencies; false forces a fresh build/download | `true` |
 | `ocaml-version` | Exact OCaml compiler for an isolated source build | `5.3.0` |
 | `token` | GitHub token for public release/commit metadata | `${{ github.token }}` |
 
@@ -86,6 +88,8 @@ F* discovers its bundled solvers automatically. Outputs:
 | `fstar-exe` | Absolute executable path |
 | `method` | `binary` or `source` |
 | `cache-hit` | `true` only when the exact package was restored |
+| `environment` | Content fingerprint of the reconciled OCaml environment (source builds) |
+| `dependency-cache-hit` | Exact private OPAM cache hit; always `false` in native mode |
 
 Calling the action again selects a separate installation for subsequent steps.
 For branch builds shared across jobs, pass the first job's `commit` output to
@@ -123,11 +127,34 @@ must report the resolved source commit. Native builds must also report the
 active OCaml compiler version. Authentication/rate-limit failures are reported
 rather than interpreted as missing releases.
 
-Only validated, finished archives are saved. Cache identities include the exact
-commit, OS/architecture, installer implementation, release asset identity/digest,
-and OS/compiler version for isolated builds. No partial-key restores are used.
-`cache: false` skips both restore and save. Concurrent misses may build the same
-revision independently; a prerequisite job can warm the cache.
+Source builds follow this order:
+
+1. Restore the private OPAM dependency cache, if using a private switch. In
+   native mode the caller restores its own OPAM cache before invoking the action.
+2. Install/reconcile dependencies from the selected revision's `fstar.opam`.
+3. Fingerprint the resulting environment, then restore the matching F* package
+   or build and cache it on a miss.
+
+The F* cache key includes the exact commit and source asset, installer/build
+recipe, OS, architecture, system ABI, compiler binaries and `-config` output,
+and the contents of installed libraries and tools. It hashes interfaces,
+native objects, archives, C stubs, headers, findlib configuration, external
+library search paths and linked system libraries. Symlink targets are followed.
+Relevant compiler/linker flags also contribute. Package versions and timestamps
+are never substitutes for file contents; a same-version rebuild invalidates
+the cache when its artifacts change. The complete installed library trees are
+hashed, so changing an unrelated installed library can also cause a miss.
+
+Private switches use a separate dependency cache keyed by platform/compiler,
+recipe and dependency manifest, with a fallback to the same platform/compiler
+when the manifest changes. Dependencies are always reconciled after restoring;
+the F* cache never uses a partial match. Private prefixes are stable across jobs
+because OCaml installations contain absolute paths. Native mode leaves OPAM
+cache ownership entirely with the caller.
+
+Only validated, finished F* archives are saved. `cache: false` skips all of this
+action's restores and saves, forcing a source rebuild or binary download.
+Concurrent misses may build independently; a prerequisite job can warm caches.
 
 Source builds use `ADMIT=1`, matching F*'s own package builds. They compile the
 selected compiler and libraries without rerunning all F* verification proofs.
@@ -142,7 +169,8 @@ and weekly to catch runner/toolchain changes. It covers:
   and Windows 2022/2025, with solver-backed F* and Pulse proofs.
 - Commit builds and native release/nightly builds on all five OS/architecture
   combinations, with plugin compilation and loading in the caller's OPAM switch.
-- Legacy F*1 and an older OCaml compiler, exact cache reuse, cache bypass,
+- Legacy F*1 and an older OCaml compiler, native/private cache reuse, cache bypass,
+  artifact fingerprint invalidation without package-version changes,
   unchanged caller OPAM settings, platform aliases, bad selectors, checksums,
   wrong compiler/commit detection, and unsafe tar/ZIP entries.
 

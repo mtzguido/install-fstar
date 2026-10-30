@@ -32,7 +32,6 @@ if os.environ.get('LEGACY') != 'true':
     work.joinpath('PulseExample.fst').write_text('module PulseExample\n#lang-pulse\nopen Pulse\nfn test (x:int) returns int { (x+1); }\n', encoding='utf-8')
     run([exe, str(work / 'PulseExample.fst')])
 if os.environ.get('NATIVE') == 'true':
-    assert os.environ['CACHE_HIT'] == 'false'
     # Capture the implicit local switch before leaving the caller's workspace.
     env['OPAMSWITCH'] = subprocess.check_output(['opam', 'switch', 'show', '--safe'], text=True).strip()
     prefix = subprocess.check_output(['opam', 'var', 'prefix'], text=True).strip()
