@@ -29,7 +29,7 @@ $STRIP "$strip_prefix"/bin/*
 ''')
         (self.root / 'Makefile').write_text('FSTAR_LIB=$(abspath ulib)\nFSTAR_LIB=$(CURDIR)/ulib\n')
         (self.root / 'mk').mkdir()
-        (self.root / 'mk/stage.mk').write_text('cd dune && $(DUNE) install --prefix=$(PREFIX)\n')
+        (self.root / 'mk/stage.mk').write_text('DUNE=flock $(LOCKFILE) dune\ncd dune && $(DUNE) install --prefix=$(PREFIX)\n')
 
     def test_macos_keeps_symbols_for_dynamic_plugins(self):
         build.prepare_packaging(self.root, 'Darwin')
@@ -44,7 +44,9 @@ $STRIP "$strip_prefix"/bin/*
         self.assertIn('strip_prefix="$(cygpath -m "$PREFIX")"', contents)
         self.assertEqual((self.root / 'Makefile').read_text(), 'FSTAR_LIB=$(call cygpath,ulib)\n' * 2)
         self.assertIn('--prefix=$(call cygpath,$(PREFIX))', (self.root / 'mk/stage.mk').read_text())
-        self.assertIn('windows-links "$${INSTALL_FSTAR_SOURCE}" && $(DUNE)',
+        self.assertIn('DUNE=flock $(LOCKFILE) "$${INSTALL_FSTAR_PYTHON}"',
+                      (self.root / 'mk/stage.mk').read_text())
+        self.assertIn('windows-dune "$${INSTALL_FSTAR_SOURCE}"',
                       (self.root / 'mk/stage.mk').read_text())
 
     def test_windows_link_target_becomes_directory_after_extraction(self):

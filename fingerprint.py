@@ -137,6 +137,15 @@ def capture(prefix):
         files.add(directory)
     findlib_conf = output(['ocamlfind', 'printconf', 'conf'])
     files.add(findlib_conf)
+    # A META file can redirect its package directory outside the installed
+    # search roots without using a filesystem symlink. Follow those directories
+    # too, so rebuilding a pinned/external library invalidates the cache.
+    packages = [line.split()[0] for line in output(['ocamlfind', 'list']).splitlines() if line.strip()]
+    for start in range(0, len(packages), 64):
+        directories = output(['ocamlfind', 'query', '-format', '%d', *packages[start:start + 64]])
+        for directory in directories.splitlines():
+            if directory:
+                files.add(directory)
     for variable in ('OCAMLPATH', 'CAML_LD_LIBRARY_PATH', 'OCAMLLIB'):
         for directory in os.environ.get(variable, '').split(os.pathsep):
             if directory:

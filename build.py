@@ -199,8 +199,11 @@ fi'''
             # exist at checkout. Repair their type after extraction, before
             # each native Dune invocation sees the generated sources.
             repair = ('"$${INSTALL_FSTAR_PYTHON}" "$${INSTALL_FSTAR_ACTION}/build.py" '
-                      'windows-links "$${INSTALL_FSTAR_SOURCE}"')
-            text = text.replace('$(DUNE) ', repair + ' && $(DUNE) ')
+                      'windows-dune "$${INSTALL_FSTAR_SOURCE}"')
+            # Keep repair and Dune under the existing lock: parallel targets
+            # must not unlink/recreate the same directory symlink concurrently.
+            text = text.replace('DUNE=flock $(LOCKFILE) dune', 'DUNE=flock $(LOCKFILE) ' + repair)
+            text = text.replace('DUNE=dune', 'DUNE=' + repair)
             stage.write_text(text, encoding='utf-8', newline='\n')
     script.write_text(contents, encoding='utf-8', newline='\n')
 
@@ -248,6 +251,10 @@ def build(state):
                INSTALL_FSTAR_ACTION=ACTION.as_posix(),
                INSTALL_FSTAR_SOURCE=source.as_posix())
     if not state.get('source_url'):
+        # Packaging compatibility edits leave the compiler sources intact but
+        # make git describe append -dirty. Record the verified checkout SHA;
+        # the cache identity separately includes all installer recipe edits.
+        env['FSTAR_COMMIT'] = state['commit']
         run(['git', '-C', source, 'submodule', 'update', '--init', '--recursive', '--depth=1'], env)
     script, output = str(ACTION / 'build.sh'), state['archive']
     bash = shutil.which('bash', path=env['PATH'])
@@ -262,7 +269,10 @@ def build(state):
 
 
 if __name__ == '__main__':
-    commands = {'windows-runtime': windows_runtime, 'windows-links': windows_links}
-    if len(sys.argv) != 3 or sys.argv[1] not in commands:
-        raise SystemExit('Usage: build.py {windows-runtime|windows-links} PATH')
-    commands[sys.argv[1]](sys.argv[2])
+    if len(sys.argv) >= 3 and sys.argv[1] == 'windows-dune':
+        windows_links(sys.argv[2])
+        run(['dune', *sys.argv[3:]], os.environ)
+    elif len(sys.argv) == 3 and sys.argv[1] == 'windows-runtime':
+        windows_runtime(sys.argv[2])
+    else:
+        raise SystemExit('Usage: build.py windows-runtime PREFIX | windows-dune SOURCE [DUNE_ARGS...]')
