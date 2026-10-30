@@ -22,6 +22,18 @@ def dependency_cache_base(state, opam_version):
     return identity([DEPENDENCY_CACHE_SCHEMA, system_abi(), state['ocaml'], opam_version])
 
 
+def remove_private_root(root):
+    def retry_writable(function, path, error):
+        if os.name != 'nt' or not isinstance(error[1], PermissionError):
+            raise error[1]
+        # OPAM installs read-only executables. Windows requires clearing that
+        # attribute before deleting our private switch for a cache restore.
+        os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+        function(path)
+
+    shutil.rmtree(root, onerror=retry_writable)
+
+
 def run(args, env, cwd=None, capture=False):
     args = [str(a) for a in args]
     # CreateProcess on Windows does not use env['PATH'] to find the program.
@@ -124,7 +136,7 @@ def prepare(state):
         # The path must be stable: compiler configurations contain absolute
         # prefixes. Never reuse an unrelated or partially prepared local switch.
         if root.exists():
-            shutil.rmtree(root)
+            remove_private_root(root)
         state.update(opamroot=root.as_posix(), opamswitch='build')
         append('GITHUB_OUTPUT', [f'dependencies-path={root}', f'dependencies-key={key}',
                                  f'dependencies-prefix={prefix}'])

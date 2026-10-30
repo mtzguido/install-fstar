@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import stat
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -135,6 +136,15 @@ class FingerprintTests(unittest.TestCase):
         with patch.object(build, 'run', return_value='5.3.0'):
             with self.assertRaisesRegex(ValueError, 'changed the compiler'):
                 build.dependencies(state)
+
+    def test_private_cache_cleanup_removes_read_only_opam_executables(self):
+        root = self.root / 'private-opam'
+        executable = root / 'build/bin/cppo.exe'
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b'installed executable')
+        executable.chmod(stat.S_IREAD)
+        build.remove_private_root(root)
+        self.assertFalse(root.exists())
 
     def test_private_compiler_cache_survives_fstar_recipe_and_commit_changes(self):
         state = {'ocaml': '5.4.0', 'commit': 'a' * 40}
