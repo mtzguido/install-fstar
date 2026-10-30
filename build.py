@@ -258,7 +258,14 @@ def windows_links(source):
             if attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
                 continue
             target = os.readlink(path)
-            if (path.parent / target).is_dir():
+            try:
+                directory = (path.parent / target).is_dir()
+            except PermissionError:
+                # Older Python raises when the target is another file symlink
+                # to a directory. Retry after repairing that target's type.
+                remaining.append(path)
+                continue
+            if directory:
                 path.unlink()
                 path.symlink_to(target, target_is_directory=True)
                 print(f'Repaired directory symlink: {path}', flush=True)
