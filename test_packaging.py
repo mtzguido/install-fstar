@@ -55,6 +55,8 @@ $STRIP "$strip_prefix"/bin/*
                       (self.root / 'mk/stage.mk').read_text())
         self.assertIn('$(call maybe_cygwin_path,$(abspath $(value $(strip $1))))',
                       (self.root / 'pulse/mk/common.mk').read_text())
+        self.assertIn('FSTAR_ROOT := $(call maybe_cygwin_path,$(FSTAR_ROOT))',
+                      (self.root / 'pulse/mk/common.mk').read_text())
         self.assertIn('cygpath -m "$(shell $(FSTAR_EXE) --locate_lib)"',
                       (self.root / 'pulse/mk/boot.mk').read_text())
 

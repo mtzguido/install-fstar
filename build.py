@@ -212,6 +212,9 @@ fi'''
             text = pulse_common.read_text(encoding='utf-8').replace(
                 '$(abspath $(value $(strip $1)))',
                 '$(call maybe_cygwin_path,$(abspath $(value $(strip $1))))')
+            # Pulse derives FSTAR_LIB and other native-tool inputs from this
+            # exported root as well as from its checked directory variables.
+            text += '\nifneq ($(FSTAR_ROOT),)\nFSTAR_ROOT := $(call maybe_cygwin_path,$(FSTAR_ROOT))\nendif\n'
             pulse_common.write_text(text, encoding='utf-8', newline='\n')
         pulse_boot = source / 'pulse/mk/boot.mk'
         if pulse_boot.exists():
