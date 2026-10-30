@@ -207,6 +207,20 @@ fi'''
             text = text.replace('DUNE=flock $(LOCKFILE) dune', 'DUNE=flock $(LOCKFILE) ' + repair)
             text = text.replace('DUNE=dune', 'DUNE=' + repair)
             stage.write_text(text, encoding='utf-8', newline='\n')
+        pulse_common = source / 'pulse/mk/common.mk'
+        if pulse_common.exists():
+            text = pulse_common.read_text(encoding='utf-8').replace(
+                '$(abspath $(value $(strip $1)))',
+                '$(call maybe_cygwin_path,$(abspath $(value $(strip $1))))')
+            pulse_common.write_text(text, encoding='utf-8', newline='\n')
+        pulse_boot = source / 'pulse/mk/boot.mk'
+        if pulse_boot.exists():
+            # --locate_lib returns backslashes on Windows. Convert them before
+            # Pulse interpolates the path into unquoted shell arguments.
+            text = pulse_boot.read_text(encoding='utf-8').replace(
+                '$(shell $(FSTAR_EXE) --locate_lib)',
+                '$(shell cygpath -m "$(shell $(FSTAR_EXE) --locate_lib)")')
+            pulse_boot.write_text(text, encoding='utf-8', newline='\n')
     script.write_text(contents, encoding='utf-8', newline='\n')
 
 

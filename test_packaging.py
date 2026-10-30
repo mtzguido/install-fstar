@@ -30,6 +30,9 @@ $STRIP "$strip_prefix"/bin/*
         (self.root / 'Makefile').write_text('FSTAR_LIB=$(abspath ulib)\nFSTAR_LIB=$(CURDIR)/ulib\n')
         (self.root / 'mk').mkdir()
         (self.root / 'mk/stage.mk').write_text('DUNE=flock $(LOCKFILE) dune\ncd dune && $(DUNE) install --prefix=$(PREFIX)\n')
+        (self.root / 'pulse/mk').mkdir(parents=True)
+        (self.root / 'pulse/mk/common.mk').write_text('$(eval override $(strip $1):=$(abspath $(value $(strip $1))))\n')
+        (self.root / 'pulse/mk/boot.mk').write_text('FSTAR_LIBDIR ?= $(shell $(FSTAR_EXE) --locate_lib)\n')
 
     def test_macos_keeps_symbols_for_dynamic_plugins(self):
         build.prepare_packaging(self.root, 'Darwin')
@@ -50,6 +53,10 @@ $STRIP "$strip_prefix"/bin/*
                       (self.root / 'mk/stage.mk').read_text())
         self.assertIn('windows-dune "$${INSTALL_FSTAR_SOURCE}"',
                       (self.root / 'mk/stage.mk').read_text())
+        self.assertIn('$(call maybe_cygwin_path,$(abspath $(value $(strip $1))))',
+                      (self.root / 'pulse/mk/common.mk').read_text())
+        self.assertIn('cygpath -m "$(shell $(FSTAR_EXE) --locate_lib)"',
+                      (self.root / 'pulse/mk/boot.mk').read_text())
 
     def test_windows_link_target_becomes_directory_after_extraction(self):
         link = self.root / 'fstarc.ml'
