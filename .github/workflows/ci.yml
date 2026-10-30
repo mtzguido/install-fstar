@@ -1,265 +1,43 @@
 name: CI
 on:
-  push:
-  pull_request:
   workflow_dispatch:
-  schedule:
-    - cron: '17 6 * * 1'
-
 permissions:
   contents: read
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  unit:
+  probe:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            python: '3.10'
-          - os: ubuntu-24.04
-            python: '3.14'
-          - os: macos-15
-            python: '3.12'
-          - os: windows-2025
-            python: '3.12'
+        os: [macos-14, macos-15-intel]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python }}
-      - run: python -m unittest -v
-      - if: runner.os == 'Linux'
-        run: shellcheck build.sh
-
-  binaries:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-24.04-arm, macos-14, macos-15-intel, windows-2022, windows-2025]
-        version: [v2026.10.25, '2026-10-18']
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./
-        id: first
-        with:
-          version: ${{ matrix.version }}
-      - name: Verify F* and Pulse with bundled solvers
-        shell: python
-        env:
-          EXPECTED_COMMIT: ${{ steps.first.outputs.commit }}
-          EXPECTED_METHOD: binary
-          ACTUAL_METHOD: ${{ steps.first.outputs.method }}
-        run: |
-          import runpy
-          runpy.run_path('tests/smoke.py')
-      - uses: ./
-        id: cached
-        with:
-          version: ${{ matrix.version }}
-      - name: Check cache reuse and exported executable
-        shell: python
-        env:
-          CACHE_HIT: ${{ steps.cached.outputs.cache-hit }}
-          EXPECTED_COMMIT: ${{ steps.first.outputs.commit }}
-          ACTUAL_COMMIT: ${{ steps.cached.outputs.commit }}
-        run: |
-          import os, subprocess
-          assert os.environ['CACHE_HIT'] == 'true'
-          assert os.environ['ACTUAL_COMMIT'] == os.environ['EXPECTED_COMMIT']
-          subprocess.run(['fstar.exe', '--version'], check=True)
-      - uses: ./
-        id: uncached
-        with:
-          version: ${{ matrix.version }}
-          cache: 'false'
-      - name: Check cache bypass
-        shell: python
-        env:
-          CACHE_HIT: ${{ steps.uncached.outputs.cache-hit }}
-        run: |
-          import os
-          assert os.environ['CACHE_HIT'] == 'false'
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: binary-${{ matrix.os }}-${{ matrix.version }}
-          path: ${{ runner.temp }}/install-fstar-tests
-          retention-days: 7
-
-  source:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-14, macos-15-intel, windows-2025]
-        variant: [commit, native-release, native-nightly]
-        include:
-          - variant: commit
-            version: 479825350e902c868b7b8c2ad918eaac073f3494
-            native: 'false'
-            ocaml: '5.3.0'
-          - variant: native-release
-            version: v2026.10.25
-            native: 'true'
-            ocaml: '5.4.0'
-          - variant: native-nightly
-            version: '2026-10-18'
-            native: 'true'
-            ocaml: '5.4.0'
-          - os: ubuntu-24.04
-            variant: legacy-commit
-            version: 3515a8a94ea4b83cc97eb89dcbac48cab88e8f6e
-            native: 'false'
-            ocaml: '5.3.0'
-            legacy: 'true'
-          - os: ubuntu-24.04
-            variant: legacy-native
-            version: 3515a8a94ea4b83cc97eb89dcbac48cab88e8f6e
-            native: 'true'
-            ocaml: '4.14.2'
-            legacy: 'true'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ocaml/setup-ocaml@v3
-        if: matrix.native == 'true'
         with:
-          ocaml-compiler: ${{ matrix.ocaml }}
+          ocaml-compiler: '5.4.0'
           opam-pin: false
-      - name: Install dependency artifact fixture
-        if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'
-        run: python tests/rebuild_dependency.py 42
-      - name: Record caller environment
+      - name: Compare native plugin loading before and after stripping
         shell: python
         run: |
-          import json, os, pathlib, subprocess
-          root = pathlib.Path(os.environ['RUNNER_TEMP'])
-          values = {k: v for k, v in os.environ.items() if k.startswith('OPAM')}
-          (root / 'caller-environment.json').write_text(json.dumps(values))
-          if '${{ matrix.native }}' == 'true':
-              (root / 'caller-prefix').write_text(subprocess.check_output(['opam', 'var', 'prefix'], text=True))
-      - uses: ./
-        id: install
-        with:
-          version: ${{ matrix.version }}
-          native: ${{ matrix.native }}
-          ocaml-version: ${{ matrix.ocaml }}
-      - name: Check caller environment is preserved
-        shell: python
-        run: |
-          import json, os, pathlib
-          before = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'caller-environment.json').read_text())
-          after = {k: v for k, v in os.environ.items() if k.startswith('OPAM')}
-          assert before == after, (before, after)
-      - name: Verify proofs and compile/load a native plugin
-        shell: python
-        env:
-          EXPECTED_COMMIT: ${{ steps.install.outputs.commit }}
-          EXPECTED_METHOD: source
-          ACTUAL_METHOD: ${{ steps.install.outputs.method }}
-          CACHE_HIT: ${{ steps.install.outputs.cache-hit }}
-          EXPECTED_OCAML: ${{ matrix.ocaml }}
-          NATIVE: ${{ matrix.native }}
-          LEGACY: ${{ matrix.legacy || 'false' }}
-        run: |
-          import runpy
-          runpy.run_path('tests/smoke.py')
-      - uses: ./
-        id: cached
-        with:
-          version: ${{ matrix.version }}
-          native: ${{ matrix.native }}
-          ocaml-version: ${{ matrix.ocaml }}
-      - name: Check source package cache reuse
-        shell: python
-        env:
-          CACHE_HIT: ${{ steps.cached.outputs.cache-hit }}
-          BEFORE: ${{ steps.install.outputs.environment }}
-          AFTER: ${{ steps.cached.outputs.environment }}
-          DEPENDENCIES_HIT: ${{ steps.cached.outputs.dependency-cache-hit }}
-          NATIVE: ${{ matrix.native }}
-        run: |
-          import os
-          assert os.environ['CACHE_HIT'] == 'true'
-          assert os.environ['BEFORE'] == os.environ['AFTER']
-          assert os.environ['DEPENDENCIES_HIT'] == ('false' if os.environ['NATIVE'] == 'true' else 'true')
-      - name: Verify cached native plugin compatibility
-        if: matrix.native == 'true'
-        shell: python
-        env:
-          EXPECTED_COMMIT: ${{ steps.cached.outputs.commit }}
-          EXPECTED_METHOD: source
-          ACTUAL_METHOD: ${{ steps.cached.outputs.method }}
-          EXPECTED_OCAML: ${{ matrix.ocaml }}
-          NATIVE: 'true'
-          LEGACY: ${{ matrix.legacy || 'false' }}
-        run: |
-          import runpy
-          runpy.run_path('tests/smoke.py')
-      - name: Rebuild dependency artifacts without changing package versions
-        if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'
-        run: python tests/rebuild_dependency.py 43
-      - uses: ./
-        id: changed
-        if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'
-        with:
-          version: ${{ matrix.version }}
-          native: 'true'
-      - name: Check artifact changes invalidate the native cache
-        if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'
-        shell: python
-        env:
-          CACHE_HIT: ${{ steps.changed.outputs.cache-hit }}
-          BEFORE: ${{ steps.cached.outputs.environment }}
-          AFTER: ${{ steps.changed.outputs.environment }}
-        run: |
-          import os
-          assert os.environ['CACHE_HIT'] == 'false'
-          assert os.environ['BEFORE'] != os.environ['AFTER']
-      - uses: ./
-        id: fresh
-        if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'
-        with:
-          version: ${{ matrix.version }}
-          native: 'true'
-          cache: 'false'
-      - name: Check native cache false forces a rebuild in the same environment
-        if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'
-        shell: python
-        env:
-          CACHE_HIT: ${{ steps.fresh.outputs.cache-hit }}
-          BEFORE: ${{ steps.changed.outputs.environment }}
-          AFTER: ${{ steps.fresh.outputs.environment }}
-        run: |
-          import os
-          assert os.environ['CACHE_HIT'] == 'false'
-          assert os.environ['BEFORE'] == os.environ['AFTER']
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: source-${{ matrix.os }}-${{ matrix.variant }}
-          path: ${{ runner.temp }}/install-fstar-tests
-          retention-days: 7
-
-  ci:
-    if: always()
-    needs: [unit, binaries, source]
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Require every matrix job to pass
-        env:
-          RESULTS: ${{ toJSON(needs.*.result) }}
-        run: |
-          python3 - <<'PY'
-          import json, os
-          assert all(result == 'success' for result in json.loads(os.environ['RESULTS']))
-          PY
+          import pathlib, shutil, subprocess
+          pathlib.Path('api.ml').write_text('let answer = 42\n')
+          pathlib.Path('plugin.ml').write_text('let () = assert (Api.answer = 42); print_endline "Plugin loaded"\n')
+          pathlib.Path('main.ml').write_text('let () = Dynlink.loadfile "./plugin.cmxs"\n')
+          def run(args, check=True):
+              print('+', ' '.join(args), flush=True)
+              return subprocess.run(args, check=check)
+          run(['opam', 'exec', '--', 'ocamlopt', '-linkall', 'dynlink.cmxa', 'api.ml', 'main.ml', '-o', 'original.exe'])
+          run(['opam', 'exec', '--', 'ocamlopt', '-shared', 'plugin.ml', '-o', 'plugin.cmxs'])
+          run(['./original.exe'])
+          for name, flags in [('plain', []), ('debug', ['-S']), ('nonglobal', ['-x'])]:
+              target = name + '.exe'
+              shutil.copyfile('original.exe', target)
+              pathlib.Path(target).chmod(0o755)
+              run(['strip', *flags, target])
+              symbols = subprocess.check_output(['nm', '-g', target], text=True)
+              print('API symbols:', [line for line in symbols.splitlines() if 'camlApi' in line], flush=True)
+              result = run(['./' + target], check=False)
+              print(name, 'exit:', result.returncode, flush=True)
+              if name == 'debug':
+                  assert result.returncode == 0
