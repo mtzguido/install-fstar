@@ -27,7 +27,8 @@ jobs:
         env:
           CACHE_HIT: ${{ steps.first.outputs.cache-hit }}
         run: |
-          import json, os, pathlib, stat
+          import json, os, pathlib, stat, sys
+          sys.path.insert(0, os.environ['GITHUB_WORKSPACE'])
           import build
           assert os.environ['CACHE_HIT'] == 'true'
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
@@ -54,7 +55,8 @@ jobs:
       - name: Reconcile and require the identical OCaml environment
         shell: python
         run: |
-          import json, os, pathlib
+          import json, os, pathlib, sys
+          sys.path.insert(0, os.environ['GITHUB_WORKSPACE'])
           import build
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
           state = json.loads((root / 'probe-state.json').read_text())
