@@ -1,0 +1,68 @@
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import build
+
+
+class PackagingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / '.scripts').mkdir()
+        self.script = self.root / '.scripts/bin-install.sh'
+        self.script.write_text('''#!/bin/bash
+if windows; then
+    if [ -z "$LIBGMP" ]; then
+      LIBGMP=$(which libgmp-10.dll)
+    fi
+    cp "$LIBGMP" "$PREFIX/bin"
+fi
+STRIP=strip
+if windows; then
+    strip_prefix="$(cygpath -m "$PREFIX")"
+fi
+$STRIP "$strip_prefix"/bin/*
+''')
+        (self.root / 'Makefile').write_text('FSTAR_LIB=$(abspath ulib)\nFSTAR_LIB=$(CURDIR)/ulib\n')
+        (self.root / 'mk').mkdir()
+        (self.root / 'mk/stage.mk').write_text('dune install --prefix=$(PREFIX)\n')
+
+    def test_macos_keeps_symbols_for_dynamic_plugins(self):
+        build.prepare_packaging(self.root, 'Darwin')
+        self.assertIn('STRIP="strip -S"', self.script.read_text())
+        self.assertIn('cp "$LIBGMP"', self.script.read_text())
+
+    def test_windows_uses_actual_runtime_dependencies_and_native_paths(self):
+        build.prepare_packaging(self.root, 'Windows_NT')
+        contents = self.script.read_text()
+        self.assertNotIn('LIBGMP', contents)
+        self.assertIn('windows-runtime "$(cygpath -m "$PREFIX")"', contents)
+        self.assertIn('strip_prefix="$(cygpath -m "$PREFIX")"', contents)
+        self.assertEqual((self.root / 'Makefile').read_text(), 'FSTAR_LIB=$(call cygpath,ulib)\n' * 2)
+        self.assertIn('--prefix=$(call cygpath,$(PREFIX))', (self.root / 'mk/stage.mk').read_text())
+
+    def test_runtime_bundling_excludes_system_dlls_and_supports_static_gmp(self):
+        prefix = self.root / 'fstar'
+        destination = prefix / 'bin'
+        destination.mkdir(parents=True)
+        system = self.root / 'Windows'
+        system.mkdir()
+        dependencies = self.root / 'compiler-runtime'
+        dependencies.mkdir()
+        for path in (destination / 'fstar.exe', system / 'kernel32.dll', dependencies / 'libwinpthread-1.dll'):
+            path.write_bytes(b'fixture binary')
+        files = [destination / 'fstar.exe', system / 'kernel32.dll', dependencies / 'libwinpthread-1.dll']
+        with patch.dict(os.environ, {'SystemRoot': str(system)}), \
+             patch.object(build, 'linked_libraries', return_value=files):
+            build.windows_runtime(prefix)
+        self.assertTrue((destination / 'libwinpthread-1.dll').is_file())
+        self.assertFalse((destination / 'kernel32.dll').exists())
+        self.assertFalse((destination / 'libgmp-10.dll').exists())
+
+
+if __name__ == '__main__':
+    unittest.main()
