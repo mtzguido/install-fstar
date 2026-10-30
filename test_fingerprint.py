@@ -72,11 +72,13 @@ class FingerprintTests(unittest.TestCase):
             external.write_bytes(b'other')
             self.assertNotEqual(before, self.tree())
 
-    def capture(self, compiler='version: 5.4.0\nc_compiler: cc', abi='abi-1'):
+    def capture(self, compiler='version: 5.4.0\nc_compiler: cc', abi='abi-1', package_directory=None):
         values = {('ocamlc', '-config'): compiler, ('ocamlopt', '-config'): compiler,
                   ('ocamlc', '-where'): str(self.root / 'lib/ocaml'),
                   ('ocamlfind', 'printconf', 'path'): str(self.root / 'lib'),
-                  ('ocamlfind', 'printconf', 'conf'): str(self.root / 'etc/findlib.conf')}
+                  ('ocamlfind', 'printconf', 'conf'): str(self.root / 'etc/findlib.conf'),
+                  ('ocamlfind', 'list'): 'example (version: 1.0)',
+                  ('ocamlfind', 'query', '-format', '%d', 'example'): str(package_directory or self.root / 'lib/example')}
         with patch.object(fingerprint, 'output', side_effect=lambda a: values[tuple(a)]), \
              patch.object(fingerprint, 'system_abi', return_value={'system': 'Linux', 'abi': abi}), \
              patch('shutil.which', side_effect=lambda name: str(self.root / 'bin' / name)), \
@@ -88,6 +90,23 @@ class FingerprintTests(unittest.TestCase):
         self.assertEqual(before, self.capture())
         self.assertNotEqual(before, self.capture(compiler='version: 5.4.0\nc_compiler: cc\nflambda: true'))
         self.assertNotEqual(before, self.capture(abi='abi-2'))
+
+    def test_meta_directory_redirect_hashes_external_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            external = Path(directory)
+            artifact = external / 'example.cmx'
+            artifact.write_bytes(b'original compiled artifact')
+            before = self.capture(package_directory=external)
+            artifact.write_bytes(b'rebuilt at the same package version')
+            self.assertNotEqual(before, self.capture(package_directory=external))
+
+    def test_windows_runtime_scan_ignores_sdk_api_set_forwarders(self):
+        api_set = self.root / 'api-ms-win-crt-runtime-l1-1-0.dll'
+        dependency = self.root / 'libgmp-10.dll'
+        api_set.write_bytes(b'virtual API compatibility forwarder')
+        dependency.write_bytes(b'actual dependency')
+        with patch.object(fingerprint, 'output', return_value=f'{api_set}\n  {dependency}\n'):
+            self.assertEqual(fingerprint.linked_libraries(self.root / 'fstar.exe', 'Windows_NT'), [dependency])
 
     def test_package_identity_uses_commit_recipe_and_environment_not_selector(self):
         state = {'source': True, 'system': 'Linux', 'machine': 'x86_64', 'commit': 'a' * 40,

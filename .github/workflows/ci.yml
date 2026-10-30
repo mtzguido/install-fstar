@@ -48,7 +48,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: ./
+      - name: Install binary
+        uses: ./
         id: first
         with:
           version: ${{ matrix.version }}
@@ -61,7 +62,8 @@ jobs:
         run: |
           import runpy
           runpy.run_path('tests/smoke.py')
-      - uses: ./
+      - name: Restore binary from cache
+        uses: ./
         id: cached
         with:
           version: ${{ matrix.version }}
@@ -76,7 +78,8 @@ jobs:
           assert os.environ['CACHE_HIT'] == 'true'
           assert os.environ['ACTUAL_COMMIT'] == os.environ['EXPECTED_COMMIT']
           subprocess.run(['fstar.exe', '--version'], check=True)
-      - uses: ./
+      - name: Download with caching disabled
+        uses: ./
         id: uncached
         with:
           version: ${{ matrix.version }}
@@ -147,7 +150,8 @@ jobs:
           (root / 'caller-environment.json').write_text(json.dumps(values))
           if '${{ matrix.native }}' == 'true':
               (root / 'caller-prefix').write_text(subprocess.check_output(['opam', 'var', 'prefix'], text=True))
-      - uses: ./
+      - name: Install F* from source
+        uses: ./
         id: install
         with:
           version: ${{ matrix.version }}
@@ -173,8 +177,13 @@ jobs:
         run: |
           import runpy
           runpy.run_path('tests/smoke.py')
-      - uses: ./
+      - name: Restore the same source package from cache
+        uses: ./
         id: cached
+        # Dependencies are already reconciled. A cache miss should fail here
+        # immediately, rather than spend another bootstrap just to fail below.
+        env:
+          MAKEFLAGS: --question
         with:
           version: ${{ matrix.version }}
           native: ${{ matrix.native }}
@@ -208,7 +217,8 @@ jobs:
       - name: Rebuild dependency artifacts without changing package versions
         if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'
         run: python tests/rebuild_dependency.py 43
-      - uses: ./
+      - name: Rebuild for changed dependency artifacts
+        uses: ./
         id: changed
         if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'
         with:
@@ -225,7 +235,8 @@ jobs:
           import os
           assert os.environ['CACHE_HIT'] == 'false'
           assert os.environ['BEFORE'] != os.environ['AFTER']
-      - uses: ./
+      - name: Build with caching disabled
+        uses: ./
         id: fresh
         if: matrix.os == 'ubuntu-24.04' && matrix.variant == 'native-release'
         with:

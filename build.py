@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 from install import ACTION, append, file_hash, identity, package_cache, unpack
-from fingerprint import linked_libraries, system_abi
+from fingerprint import linked_libraries, system_abi, windows_api_set
 
 
 # Bump when changing the private switch layout or compiler provisioning. F*
@@ -184,6 +184,8 @@ def prepare_packaging(source, system):
 fi'''
         contents = re.sub(r'^if windows; then\n.*?^fi', lambda _: replacement,
                           contents, count=1, flags=re.MULTILINE | re.DOTALL)
+        # Preserve copied dependency DLLs byte-for-byte, including signatures.
+        contents = contents.replace('"$strip_prefix"/bin/*', '"$strip_prefix"/bin/fstar.exe')
         makefile = source / 'Makefile'
         text = makefile.read_text(encoding='utf-8')
         # Native Windows F* cannot interpret Cygwin's /cygdrive paths in its
@@ -191,8 +193,10 @@ fi'''
         for old in ('FSTAR_LIB=$(abspath ulib)', 'FSTAR_LIB=$(CURDIR)/ulib'):
             text = text.replace(old, 'FSTAR_LIB=$(call cygpath,ulib)')
         makefile.write_text(text, encoding='utf-8', newline='\n')
-        stage = source / 'mk/stage.mk'
-        if stage.exists():
+        # Stages 1/2 share mk/stage.mk; stage 3 has an independent copy.
+        for stage in (source / 'mk/stage.mk', source / 'stage3/Makefile'):
+            if not stage.exists():
+                continue
             text = stage.read_text(encoding='utf-8').replace(
                 '--prefix=$(PREFIX)', '--prefix=$(call cygpath,$(PREFIX))')
             # Git creates file symlinks for generated directories that do not
@@ -205,6 +209,23 @@ fi'''
             text = text.replace('DUNE=flock $(LOCKFILE) dune', 'DUNE=flock $(LOCKFILE) ' + repair)
             text = text.replace('DUNE=dune', 'DUNE=' + repair)
             stage.write_text(text, encoding='utf-8', newline='\n')
+        pulse_common = source / 'pulse/mk/common.mk'
+        if pulse_common.exists():
+            text = pulse_common.read_text(encoding='utf-8').replace(
+                '$(abspath $(value $(strip $1)))',
+                '$(call maybe_cygwin_path,$(abspath $(value $(strip $1))))')
+            # Pulse derives FSTAR_LIB and other native-tool inputs from this
+            # exported root as well as from its checked directory variables.
+            text += '\nifneq ($(FSTAR_ROOT),)\nFSTAR_ROOT := $(call maybe_cygwin_path,$(FSTAR_ROOT))\nendif\n'
+            pulse_common.write_text(text, encoding='utf-8', newline='\n')
+        pulse_boot = source / 'pulse/mk/boot.mk'
+        if pulse_boot.exists():
+            # --locate_lib returns backslashes on Windows. Convert them before
+            # Pulse interpolates the path into unquoted shell arguments.
+            text = pulse_boot.read_text(encoding='utf-8').replace(
+                '$(shell $(FSTAR_EXE) --locate_lib)',
+                '$(shell cygpath -m "$(shell $(FSTAR_EXE) --locate_lib)")')
+            pulse_boot.write_text(text, encoding='utf-8', newline='\n')
     script.write_text(contents, encoding='utf-8', newline='\n')
 
 
@@ -214,7 +235,7 @@ def windows_runtime(prefix):
     system = Path(os.environ['SystemRoot']).resolve()
     for library in linked_libraries(destination / 'fstar.exe', 'Windows_NT'):
         library = library.resolve()
-        if library.suffix.lower() != '.dll' or library.is_relative_to(system):
+        if library.suffix.lower() != '.dll' or library.is_relative_to(system) or windows_api_set(library):
             continue
         target = destination / library.name
         if library != target.resolve():
@@ -226,20 +247,27 @@ def windows_links(source):
     """Retype Git file symlinks whose generated directory targets now exist."""
     source = Path(source)
     listing = run(['git', '-C', source, 'ls-files', '--stage', '-z'], os.environ, capture=True)
-    for entry in listing.split('\0'):
-        if not entry.startswith('120000 '):
-            continue
-        path = source / entry.split('\t', 1)[1]
-        if not path.is_symlink():
-            continue
-        attributes = getattr(path.lstat(), 'st_file_attributes', 0)
-        if attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
-            continue
-        target = os.readlink(path)
-        if (path.parent / target).is_dir():
-            path.unlink()
-            path.symlink_to(target, target_is_directory=True)
-            print(f'Repaired directory symlink: {path}', flush=True)
+    pending = [source / entry.split('\t', 1)[1] for entry in listing.split('\0')
+               if entry.startswith('120000 ')]
+    while pending:
+        remaining = []
+        for path in pending:
+            if not path.is_symlink():
+                continue
+            attributes = getattr(path.lstat(), 'st_file_attributes', 0)
+            if attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
+                continue
+            target = os.readlink(path)
+            if (path.parent / target).is_dir():
+                path.unlink()
+                path.symlink_to(target, target_is_directory=True)
+                print(f'Repaired directory symlink: {path}', flush=True)
+            else:
+                remaining.append(path)
+        # A link may target another link repaired later in the first pass.
+        if len(remaining) == len(pending):
+            break
+        pending = remaining
 
 
 def build(state):

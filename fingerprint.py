@@ -97,8 +97,12 @@ def linked_libraries(binary, system):
         return [Path(p) for p in re.findall(r'(?:=>\s+)?(/[^\n]+?)\s+\(0x[0-9a-f]+\)', result.stdout)]
     if system == 'Windows_NT':
         # cygcheck reports transitive dependencies using native Windows paths.
+        # API-set names are virtual OS contracts, not DLLs found via PATH.
+        # cygcheck can incorrectly resolve them to compatibility forwarders in
+        # an unrelated JDK/SDK. The OS schema and runtime are hashed below.
         result = output(['cygcheck', binary])
-        return [Path(line.strip()) for line in result.splitlines() if Path(line.strip()).is_file()]
+        return [Path(line.strip()) for line in result.splitlines()
+                if Path(line.strip()).is_file() and not windows_api_set(Path(line.strip()))]
     listing = output(['otool', '-L', binary])
     rpaths = re.findall(r'cmd LC_RPATH\s+cmdsize \d+\s+path (.*?) \(offset',
                        output(['otool', '-l', binary]))
@@ -123,6 +127,10 @@ def linked_libraries(binary, system):
     return libraries
 
 
+def windows_api_set(path):
+    return Path(path).name.lower().startswith(('api-ms-', 'ext-ms-'))
+
+
 def capture(prefix):
     files = Files()
     prefix = Path(prefix)
@@ -137,6 +145,15 @@ def capture(prefix):
         files.add(directory)
     findlib_conf = output(['ocamlfind', 'printconf', 'conf'])
     files.add(findlib_conf)
+    # A META file can redirect its package directory outside the installed
+    # search roots without using a filesystem symlink. Follow those directories
+    # too, so rebuilding a pinned/external library invalidates the cache.
+    packages = [line.split()[0] for line in output(['ocamlfind', 'list']).splitlines() if line.strip()]
+    for start in range(0, len(packages), 64):
+        directories = output(['ocamlfind', 'query', '-format', '%d', *packages[start:start + 64]])
+        for directory in directories.splitlines():
+            if directory:
+                files.add(directory)
     for variable in ('OCAMLPATH', 'CAML_LD_LIBRARY_PATH', 'OCAMLLIB'):
         for directory in os.environ.get(variable, '').split(os.pathsep):
             if directory:
@@ -151,6 +168,10 @@ def capture(prefix):
         tools[name] = executable
         files.add(executable)
     abi = system_abi()
+    if abi['system'] == 'Windows_NT':
+        system = Path(os.environ['SystemRoot']) / 'System32'
+        for name in ('apisetschema.dll', 'kernelbase.dll', 'ntdll.dll', 'ucrtbase.dll'):
+            files.add(system / name)
     inspected = set()
     while files.binaries - inspected:
         binary = sorted(files.binaries - inspected)[0]

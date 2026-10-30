@@ -139,7 +139,8 @@ The F* cache key includes the exact commit and source asset, installer/build
 recipe, OS, architecture, system ABI, compiler binaries and `-config` output,
 and the contents of installed libraries and tools. It hashes interfaces,
 native objects, archives, C stubs, headers, findlib configuration, external
-library search paths and linked system libraries. Symlink targets are followed.
+library search paths and linked system libraries. Symlink targets and findlib
+`META` directory redirects are followed.
 Relevant compiler/linker flags also contribute. Package versions and timestamps
 are never substitutes for file contents; a same-version rebuild invalidates
 the cache when its artifacts change. The complete installed library trees are
